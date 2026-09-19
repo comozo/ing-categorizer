@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ing-categorizer &middot; review</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <h1>Check the categories</h1>
+    <p class="lede">Fix anything that looks wrong, then download. Nothing is saved on the server.</p>
+    <div class="count">{{ count }} transaction{{ "s" if count != 1 else "" }}</div>
+
+    <form action="/download" method="post">
+      <div class="txn-list">
+        {% for row in rows %}
+        <div class="txn">
+          <div class="date">{{ row.date }}</div>
+          <div class="desc">{{ row.description }}</div>
+          <div class="amount">{{ row.amount }}</div>
+          <select name="category_{{ row.id }}">
+            {% for cat in categories %}
+              <option value="{{ cat }}" {% if cat == row.category %}selected{% endif %}>{{ cat }}</option>
+            {% endfor %}
+          </select>
+          <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
+        </div>
+        {% endfor %}
+      </div>
+      <button type="submit">Download categorized CSV</button>
+    </form>
+
+    <footer><a href="/">&larr; Start over</a></footer>
+  </div>
+</body>
+</html>

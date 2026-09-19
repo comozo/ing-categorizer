@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ing-categorizer</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <h1>Categorize your ING export</h1>
+    <p class="lede">Upload a CSV from ING Australia online banking. Categories are suggested by a model running on your own server &mdash; nothing is sent anywhere else.</p>
+
+    {% if error %}
+      <div class="error">{{ error }}</div>
+    {% endif %}
+
+    <form class="card" action="/upload" method="post" enctype="multipart/form-data">
+      <div class="dropzone">
+        Choose your exported CSV file
+        <input type="file" name="file" accept=".csv" required>
+      </div>
+      <br>
+      <button type="submit">Categorize</button>
+    </form>
+
+    <footer>Runs entirely on your own cluster. No accounts, no cloud, no per-transaction cost.</footer>
+  </div>
+</body>
+</html>
