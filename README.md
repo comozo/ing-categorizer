@@ -1,6 +1,6 @@
 # ing-categorizer
 
-Upload a CSV export from ING Australia online banking, get it back with a suggested spending category per transaction, review/edit on your phone, download the result. No transaction data ever leaves the machine it runs on — categorization runs against a local classifier and a local [Ollama](https://ollama.com) model, both in-cluster, never an external API.
+Upload a CSV export from ING Australia online banking, get it back with a suggested spending category per transaction, review/edit on your phone, download the result. No transaction data ever leaves the LAN — categorization runs against a local classifier plus an [Ollama](https://ollama.com) server on the network (not a hosted/third-party API), controlled entirely by `OLLAMA_URL`.
 
 Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, Firefly III) without paying per-transaction for categorization, and without any bank data touching a third party.
 
@@ -9,7 +9,7 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 1. Upload a CSV export (Date / Description / Amount, or separate Debit/Credit columns — column names are matched loosely).
 2. Each transaction is classified against a fixed, hand-picked category list (see `app/categories.py`) by a **hybrid** pipeline:
    - a small local scikit-learn classifier (TF-IDF + logistic regression), trained on categorizations you've confirmed on past uploads, gets first refusal — no network call at all;
-   - anything it isn't confident about (or, on a fresh install, everything — there's nothing to train on yet) falls through to a local Ollama model, using Ollama's structured-output mode so it can only answer with one of the fixed categories.
+   - anything it isn't confident about (or, on a fresh install, everything — there's nothing to train on yet) falls through to Ollama (`OLLAMA_URL`), using its structured-output mode so it can only answer with one of the fixed categories.
 3. Review and fix any miscategorized rows in a mobile-friendly table.
 4. Download the same CSV with a `Category` column appended, ready to import into whichever finance app you're using.
 5. Every row you confirmed on the review screen (except `Uncategorized`) is added to the classifier's training set and it retrains immediately — so the more you use this, the less it needs Ollama at all. This is the only state kept between requests: a small CSV of (description, category) pairs and the trained model, nothing else.
@@ -35,4 +35,4 @@ Requires a running Ollama instance with the configured model pulled (`ollama pul
 
 ## Deployment
 
-Deployed via Flux in [comozo/homelab-cluster](https://github.com/comozo/homelab-cluster) under `kubernetes/apps/ing-categorizer/`, alongside a matching in-cluster Ollama deployment under `kubernetes/apps/ollama/`.
+Deployed via Flux in [comozo/homelab-cluster](https://github.com/comozo/homelab-cluster) under `kubernetes/apps/ing-categorizer/`. Ollama itself is **not** deployed in-cluster (that was tried first, see the repo's git history) — `OLLAMA_URL` currently points at a plain `ollama serve` running on the operator's own laptop, reachable over the LAN. That's a DHCP-leased IP, not a stable address; see the comment on `OLLAMA_URL` in `kubernetes/apps/ing-categorizer/ing-categorizer/app/helmrelease.yaml` before assuming a classification failure is a bug in this app rather than a stale IP.
