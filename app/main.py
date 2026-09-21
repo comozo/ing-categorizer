@@ -1,8 +1,12 @@
 """ing-categorizer: upload an ING Australia CSV export, get it back with an
 AI-suggested category per transaction, review/edit on a phone or desktop,
-download the result. Stateless - nothing is stored server-side between
-requests, and no transaction data ever leaves the cluster (categorization
-runs against a local Ollama model, no external API calls)."""
+download the result. No transaction data ever leaves the cluster - the
+local classifier and Ollama both run in-cluster, no external API calls.
+
+The only thing persisted between requests is the (description -> category)
+pairs you've confirmed on the review screen, and the classifier trained on
+them - see app/store.py and app/classifier_ml.py. Everything else about a
+request is forgotten once the response is sent."""
 
 from __future__ import annotations
 
@@ -13,6 +17,7 @@ from fastapi.responses import HTMLResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
+from app import classifier_ml, store
 from app.categories import CATEGORIES
 from app.classifier import classify_all
 from app.csv_io import CsvFormatError, Transaction, parse_csv, write_categorized_csv
@@ -66,12 +71,26 @@ async def download(request: Request):
 
     transactions: list[Transaction] = []
     categories: list[str] = []
+    training_pairs: list[tuple[str, str]] = []
     for row_id in row_ids:
         raw = json.loads(form[f"raw_{row_id}"])
+        category = form.get(f"category_{row_id}", "Uncategorized")
+        description = form.get(f"desc_{row_id}", "")
+
         transactions.append(Transaction(row_id=int(row_id), date="", description="", amount="", raw=raw))
-        categories.append(form.get(f"category_{row_id}", "Uncategorized"))
+        categories.append(category)
+        if description and category != "Uncategorized":
+            training_pairs.append((description, category))
 
     csv_text = write_categorized_csv(transactions, categories)
+
+    # Every download is a batch of human-confirmed labels - feed them straight
+    # back into the classifier's training set and retrain before responding.
+    if training_pairs:
+        store.append_pairs(training_pairs)
+        classifier_ml.retrain()
+        classifier_ml.invalidate_cache()
+
     return PlainTextResponse(
         csv_text,
         media_type="text/csv",

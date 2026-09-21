@@ -3,6 +3,12 @@
 Uses Ollama's structured-output mode (a JSON schema passed as `format`) so a
 small model's output is constrained to exactly one of the fixed categories,
 rather than parsed out of free text.
+
+classify_all() is the hybrid entry point main.py actually calls: the local
+scikit-learn classifier (app/classifier_ml.py) gets first refusal on every
+transaction - trained on past human-confirmed categorizations, no network
+call at all - and only what it isn't confident about (or, on a fresh
+install, everything) falls through to Ollama here.
 """
 
 from __future__ import annotations
@@ -11,6 +17,7 @@ import os
 
 import httpx
 
+from app import classifier_ml
 from app.categories import CATEGORIES
 from app.csv_io import Transaction
 
@@ -66,8 +73,21 @@ async def classify(client: httpx.AsyncClient, txn: Transaction) -> str:
 
 
 async def classify_all(transactions: list[Transaction]) -> list[str]:
-    async with httpx.AsyncClient() as client:
-        results = []
-        for txn in transactions:
-            results.append(await classify(client, txn))
-        return results
+    """Local classifier first, Ollama only for what it won't commit to."""
+    results: list[str | None] = [None] * len(transactions)
+    needs_ollama: list[int] = []
+
+    for i, txn in enumerate(transactions):
+        guess = classifier_ml.predict(txn.description)
+        if guess is not None:
+            category, _confidence = guess
+            results[i] = category
+        else:
+            needs_ollama.append(i)
+
+    if needs_ollama:
+        async with httpx.AsyncClient() as client:
+            for i in needs_ollama:
+                results[i] = await classify(client, transactions[i])
+
+    return results  # type: ignore[return-value]

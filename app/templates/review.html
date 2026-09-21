@@ -25,6 +25,7 @@
             {% endfor %}
           </select>
           <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
+          <input type="hidden" name="desc_{{ row.id }}" value="{{ row.description }}">
         </div>
         {% endfor %}
       </div>
