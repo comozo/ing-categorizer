@@ -20,22 +20,48 @@ from ofxtools.Parser import OFXTree
 
 logger = logging.getLogger(__name__)
 
-# ofxtools treats <BANKTRANLIST>'s DTSTART/DTEND as hard-required, even though they're just
-# the statement period, not anything about individual transactions - we never read them. ING
-# Australia's own export omits them entirely (confirmed against a real file, which failed with
-# "Can't set BANKTRANLIST.dtstart to None: DateTime: Value is required"), so inject harmless
-# placeholders before parsing rather than depend on ofxtools relaxing a spec requirement it has
-# no option to relax. Only touches a <BANKTRANLIST> that's missing DTSTART - a well-formed one
-# is left untouched.
-_MISSING_BANKTRANLIST_DATES = re.compile(r"(<BANKTRANLIST>)(?!\s*<DTSTART)")
-_BANKTRANLIST_DATE_PLACEHOLDER = (
-    r"\1<DTSTART>19700101000000</DTSTART><DTEND>20991231000000</DTEND>"
-)
+# ofxtools enforces several fields as hard-required that we never actually read - we only ever
+# pull statement.transactions out of a parsed file, nothing about the statement period or which
+# account it's for. ING Australia's real export omits both of the fields below entirely (each
+# confirmed against a real upload, one at a time, as each became the next error in turn):
+#
+#   - <BANKTRANLIST>'s DTSTART/DTEND (the statement period)
+#   - <STMTRS>'s BANKACCTFROM (bank id / account id / account type)
+#
+# ofxtools has no API to relax these, so each gets a harmless placeholder injected before
+# parsing - but only when genuinely missing; a well-formed block is left untouched. ofxtools
+# also enforces field *order* (confirmed by trial: inserting BANKACCTFROM before CURDEF instead
+# of after raises "Elements out of order"), so each patch's anchor and insertion point respects
+# where the chart's own spec says that field belongs.
+#
+# Add another entry here, following the same shape, if a real file surfaces a third one -
+# that's the expected way this list grows, not a sign something's wrong with the approach.
+_REQUIRED_FIELD_PATCHES: list[tuple[str, re.Pattern[str], str]] = [
+    (
+        "<BANKTRANLIST> missing DTSTART/DTEND",
+        re.compile(r"(<BANKTRANLIST>)(?!\s*<DTSTART)"),
+        r"\1<DTSTART>19700101000000</DTSTART><DTEND>20991231000000</DTEND>",
+    ),
+    (
+        "<STMTRS> missing BANKACCTFROM",
+        # CURDEF's value is always a 3-letter ISO currency code (OFX spec) - anchoring on the
+        # whole tag+value, not just <CURDEF>, keeps the insertion point after it as the spec
+        # requires (BANKACCTFROM follows CURDEF in STMTRS's own field order).
+        re.compile(r"(<CURDEF>[A-Z]{3})(?!\s*<BANKACCTFROM)"),
+        r"\1<BANKACCTFROM><BANKID>000000000</BANKID><ACCTID>UNKNOWN</ACCTID>"
+        r"<ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>",
+    ),
+]
 
 
-def _patch_missing_bank_tranlist_dates(text: str) -> tuple[str, int]:
-    """Returns the patched text and how many <BANKTRANLIST> blocks were patched."""
-    return _MISSING_BANKTRANLIST_DATES.subn(_BANKTRANLIST_DATE_PLACEHOLDER, text)
+def _patch_missing_required_fields(text: str) -> tuple[str, list[str]]:
+    """Returns the patched text and a list naming which patches actually fired."""
+    applied: list[str] = []
+    for description, pattern, placeholder in _REQUIRED_FIELD_PATCHES:
+        text, count = pattern.subn(placeholder, text)
+        if count:
+            applied.append(f"{description} (x{count})")
+    return text, applied
 
 
 class OfxFormatError(ValueError):
@@ -92,13 +118,10 @@ def parse_ofx(raw_bytes: bytes) -> list[Transaction]:
         text = raw_bytes.decode("cp1252", errors="replace")
         encoding = "cp1252"
 
-    patched_text, patched_count = _patch_missing_bank_tranlist_dates(text)
-    if patched_count:
-        logger.info(
-            "Patched %d <BANKTRANLIST> block(s) missing DTSTART/DTEND with placeholder dates",
-            patched_count,
-        )
-    parse_bytes = patched_text.encode(encoding) if patched_count else raw_bytes
+    patched_text, applied = _patch_missing_required_fields(text)
+    if applied:
+        logger.info("Patched missing required OFX field(s): %s", "; ".join(applied))
+    parse_bytes = patched_text.encode(encoding) if applied else raw_bytes
 
     tree = OFXTree()
     try:
