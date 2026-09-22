@@ -9,12 +9,12 @@
 <body>
   <div class="shell">
     <h1>Check the categories</h1>
-    <p class="lede">Fix anything that looks wrong, then download. Nothing is saved on the server.</p>
-    <div class="count">{{ count }} transaction{{ "s" if count != 1 else "" }}</div>
+    <p class="lede">Fix anything that looks wrong, then download. Nothing is saved on the server beyond what you confirm.</p>
+    <div class="count">{{ count }} transaction{{ "s" if count != 1 else "" }} &middot; {{ needs_review|length }} need a look, {{ confident|length }} already confident</div>
 
     <form action="/download" method="post">
-      <div class="txn-list">
-        {% for row in rows %}
+
+      {% macro txn_row(row) %}
         <div class="txn">
           <div class="date">{{ row.date }}</div>
           <div class="desc">{{ row.description }}</div>
@@ -27,8 +27,38 @@
           <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
           <input type="hidden" name="desc_{{ row.id }}" value="{{ row.description }}">
         </div>
-        {% endfor %}
-      </div>
+      {% endmacro %}
+
+      {% if needs_review %}
+      <details class="section" open>
+        <summary>⚠ Needs your review ({{ needs_review|length }})</summary>
+        <div class="txn-list">
+          {% for row in needs_review %}{{ txn_row(row) }}{% endfor %}
+        </div>
+      </details>
+      {% endif %}
+
+      {% if confident %}
+      <details class="section confident-section" {% if not needs_review %}open{% endif %}>
+        <summary>&check; Already confident ({{ confident|length }})</summary>
+        <p class="section-note">The local classifier is sure about these &mdash; worth a glance, not a close read.</p>
+        <div class="txn-list">
+          {% for row in confident %}
+            <div class="txn compact">
+              <div class="desc">{{ row.description }}<span class="confidence">{{ row.confidence }}%</span></div>
+              <select name="category_{{ row.id }}">
+                {% for cat in categories %}
+                  <option value="{{ cat }}" {% if cat == row.category %}selected{% endif %}>{{ cat }}</option>
+                {% endfor %}
+              </select>
+              <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
+              <input type="hidden" name="desc_{{ row.id }}" value="{{ row.description }}">
+            </div>
+          {% endfor %}
+        </div>
+      </details>
+      {% endif %}
+
       <button type="submit">Download categorized CSV</button>
     </form>
 

@@ -40,7 +40,7 @@ async def upload(request: Request, file: UploadFile = File(...)):
     except CsvFormatError as exc:
         return templates.TemplateResponse(request, "index.html", {"error": str(exc)})
 
-    categories = await classify_all(transactions)
+    classifications = await classify_all(transactions)
 
     rows = [
         {
@@ -48,16 +48,32 @@ async def upload(request: Request, file: UploadFile = File(...)):
             "date": txn.date,
             "description": txn.description,
             "amount": txn.amount,
-            "category": category,
+            "category": c.category,
+            "confidence": round(c.confidence * 100) if c.confidence is not None else None,
             "raw_json": json.dumps(txn.raw),
         }
-        for txn, category in zip(transactions, categories)
+        for txn, c in zip(transactions, classifications)
     ]
+
+    # Triage, not filtering: everything is still here and still editable, this
+    # just decides what a human needs to actually look closely at. The local
+    # classifier only ever returns a result once it's already confident enough
+    # (see CONFIDENCE_THRESHOLD in classifier_ml.py), so "came from the
+    # classifier" already means "confident" - anything Ollama had to answer is,
+    # by construction, either genuinely novel or something the classifier
+    # wasn't sure about, which is exactly what's worth a second look.
+    needs_review = [r for r, c in zip(rows, classifications) if c.source == "ollama"]
+    confident = [r for r, c in zip(rows, classifications) if c.source == "classifier"]
 
     return templates.TemplateResponse(
         request,
         "review.html",
-        {"rows": rows, "categories": CATEGORIES, "count": len(rows)},
+        {
+            "needs_review": needs_review,
+            "confident": confident,
+            "categories": CATEGORIES,
+            "count": len(rows),
+        },
     )
 
 
