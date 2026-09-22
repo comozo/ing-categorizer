@@ -10,6 +10,7 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 2. Each transaction is classified against a fixed, hand-picked category list (see `app/categories.py`) by a **hybrid** pipeline:
    - a small local scikit-learn classifier (TF-IDF + logistic regression), trained on categorizations you've confirmed on past uploads, gets first refusal — no network call at all;
    - anything it isn't confident about (or, on a fresh install, everything — there's nothing to train on yet) falls through to Ollama (`OLLAMA_URL`), using its structured-output mode so it can only answer with one of the fixed categories.
+   - Ollama only ever sees the **description text** — never the date, the amount, or which account a transaction came from. And it's only called once per **unique** description in a batch, not once per transaction: five transactions at the same supermarket become one Ollama call, not five, with the result applied to all five.
 3. Review and fix any miscategorized rows in a mobile-friendly table.
 4. Download the same CSV with a `Category` column appended, ready to import into whichever finance app you're using.
 5. Every row you confirmed on the review screen (except `Uncategorized`) is added to the classifier's training set and it retrains immediately — so the more you use this, the less it needs Ollama at all. This is the only state kept between requests: a small CSV of (description, category) pairs and the trained model, nothing else.
