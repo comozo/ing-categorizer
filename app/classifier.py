@@ -44,7 +44,7 @@ import httpx
 
 from app import classifier_ml
 from app.categories import CATEGORIES
-from app.csv_io import Transaction
+from app.ofx_io import Transaction
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")

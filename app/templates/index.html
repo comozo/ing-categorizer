@@ -9,7 +9,7 @@
 <body>
   <div class="shell">
     <h1>Categorize your ING export</h1>
-    <p class="lede">Upload a CSV from ING Australia online banking. Categories are suggested by a model running on your own server &mdash; nothing is sent anywhere else.</p>
+    <p class="lede">Upload an OFX/QFX export from ING Australia online banking. Categories are suggested by a model running on your own server &mdash; nothing is sent anywhere else.</p>
 
     {% if error %}
       <div class="error">{{ error }}</div>
@@ -17,8 +17,8 @@
 
     <form class="card" action="/upload" method="post" enctype="multipart/form-data">
       <div class="dropzone">
-        Choose your exported CSV file
-        <input type="file" name="file" accept=".csv" required>
+        Choose your exported OFX/QFX file
+        <input type="file" name="file" accept=".ofx,.qfx" required>
       </div>
       <br>
       <button type="submit">Categorize</button>

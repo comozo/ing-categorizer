@@ -1,12 +1,12 @@
 # ing-categorizer
 
-Upload a CSV export from ING Australia online banking, get it back with a suggested spending category per transaction, review/edit on your phone, download the result. No transaction data ever leaves the LAN — categorization runs against a local classifier plus an [Ollama](https://ollama.com) server on the network (not a hosted/third-party API), controlled entirely by `OLLAMA_URL`.
+Upload an OFX/QFX export from ING Australia online banking, get back a CSV with a suggested spending category per transaction, review/edit on your phone, download the result. No transaction data ever leaves the LAN — categorization runs against a local classifier plus an [Ollama](https://ollama.com) server on the network (not a hosted/third-party API), controlled entirely by `OLLAMA_URL`.
 
 Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, Firefly III) without paying per-transaction for categorization, and without any bank data touching a third party.
 
 ## How it works
 
-1. Upload a CSV export (Date / Description / Amount, or separate Debit/Credit columns — column names are matched loosely).
+1. Upload an OFX or QFX export. Unlike CSV, OFX has typed fields — a signed amount, a real date, a stable per-transaction `FITID` — so there's no column-name guesswork the way there was with CSV (that parser existed briefly; see git history if you need a CSV-shaped starting point again).
 2. Each transaction is classified against a fixed, hand-picked category list (see `app/categories.py`) by a **hybrid** pipeline:
    - a small local scikit-learn classifier (TF-IDF + logistic regression), trained on categorizations you've confirmed on past uploads, gets first refusal — no network call at all;
    - anything it isn't confident about (or, on a fresh install, everything — there's nothing to train on yet) falls through to Ollama (`OLLAMA_URL`), using its structured-output mode so it can only answer with one of the fixed categories.

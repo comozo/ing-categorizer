@@ -5,3 +5,4 @@ python-multipart==0.0.20
 httpx==0.28.1
 scikit-learn==1.6.1
 joblib==1.4.2
+ofxtools==1.1.1

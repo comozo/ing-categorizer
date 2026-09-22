@@ -1,4 +1,4 @@
-"""ing-categorizer: upload an ING Australia CSV export, get it back with an
+"""ing-categorizer: upload an ING Australia OFX export, get it back with an
 AI-suggested category per transaction, review/edit on a phone or desktop,
 download the result. No transaction data ever leaves the cluster - the
 local classifier and Ollama both run in-cluster, no external API calls.
@@ -20,7 +20,7 @@ from fastapi.templating import Jinja2Templates
 from app import classifier_ml, store
 from app.categories import CATEGORIES
 from app.classifier import classify_all
-from app.csv_io import CsvFormatError, Transaction, parse_csv, write_categorized_csv
+from app.ofx_io import OfxFormatError, Transaction, parse_ofx, write_categorized_csv
 
 app = FastAPI(title="ing-categorizer")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -36,8 +36,8 @@ async def index(request: Request):
 async def upload(request: Request, file: UploadFile = File(...)):
     raw = await file.read()
     try:
-        transactions = parse_csv(raw)
-    except CsvFormatError as exc:
+        transactions = parse_ofx(raw)
+    except OfxFormatError as exc:
         return templates.TemplateResponse(request, "index.html", {"error": str(exc)})
 
     classifications = await classify_all(transactions)
