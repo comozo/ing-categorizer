@@ -13,11 +13,29 @@ from __future__ import annotations
 import csv
 import io
 import logging
+import re
 from dataclasses import dataclass
 
 from ofxtools.Parser import OFXTree
 
 logger = logging.getLogger(__name__)
+
+# ofxtools treats <BANKTRANLIST>'s DTSTART/DTEND as hard-required, even though they're just
+# the statement period, not anything about individual transactions - we never read them. ING
+# Australia's own export omits them entirely (confirmed against a real file, which failed with
+# "Can't set BANKTRANLIST.dtstart to None: DateTime: Value is required"), so inject harmless
+# placeholders before parsing rather than depend on ofxtools relaxing a spec requirement it has
+# no option to relax. Only touches a <BANKTRANLIST> that's missing DTSTART - a well-formed one
+# is left untouched.
+_MISSING_BANKTRANLIST_DATES = re.compile(r"(<BANKTRANLIST>)(?!\s*<DTSTART)")
+_BANKTRANLIST_DATE_PLACEHOLDER = (
+    r"\1<DTSTART>19700101000000</DTSTART><DTEND>20991231000000</DTEND>"
+)
+
+
+def _patch_missing_bank_tranlist_dates(text: str) -> tuple[str, int]:
+    """Returns the patched text and how many <BANKTRANLIST> blocks were patched."""
+    return _MISSING_BANKTRANLIST_DATES.subn(_BANKTRANLIST_DATE_PLACEHOLDER, text)
 
 
 class OfxFormatError(ValueError):
@@ -64,9 +82,27 @@ class Transaction:
 
 
 def parse_ofx(raw_bytes: bytes) -> list[Transaction]:
+    # Patch on the decoded text, then re-encode with the same encoding declared in the OFX
+    # header (or a safe default) - re-encoding as UTF-8 regardless of what the header
+    # declares would leave the two disagreeing, and ofxtools reads the header itself.
+    try:
+        text = raw_bytes.decode("utf-8-sig")
+        encoding = "utf-8"
+    except UnicodeDecodeError:
+        text = raw_bytes.decode("cp1252", errors="replace")
+        encoding = "cp1252"
+
+    patched_text, patched_count = _patch_missing_bank_tranlist_dates(text)
+    if patched_count:
+        logger.info(
+            "Patched %d <BANKTRANLIST> block(s) missing DTSTART/DTEND with placeholder dates",
+            patched_count,
+        )
+    parse_bytes = patched_text.encode(encoding) if patched_count else raw_bytes
+
     tree = OFXTree()
     try:
-        tree.parse(io.BytesIO(raw_bytes))
+        tree.parse(io.BytesIO(parse_bytes))
         ofx = tree.convert()
     except Exception as exc:
         logger.error(_diagnose(raw_bytes, exc))

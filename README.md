@@ -6,7 +6,7 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 
 ## How it works
 
-1. Upload an OFX or QFX export. Unlike CSV, OFX has typed fields — a signed amount, a real date, a stable per-transaction `FITID` — so there's no column-name guesswork the way there was with CSV (that parser existed briefly; see git history if you need a CSV-shaped starting point again).
+1. Upload an OFX or QFX export. Unlike CSV, OFX has typed fields — a signed amount, a real date, a stable per-transaction `FITID` — so there's no column-name guesswork the way there was with CSV (that parser existed briefly; see git history if you need a CSV-shaped starting point again). ING Australia's own export omits `<BANKTRANLIST>`'s `DTSTART`/`DTEND` (the statement period, not anything about individual transactions), which `ofxtools` otherwise treats as hard-required — confirmed against a real export, and worked around by patching in harmless placeholder dates before parsing when they're missing.
 2. Each transaction is classified against a fixed, hand-picked category list (see `app/categories.py`) by a **hybrid** pipeline:
    - a small local scikit-learn classifier (TF-IDF + logistic regression), trained on categorizations you've confirmed on past uploads, gets first refusal — no network call at all;
    - anything it isn't confident about (or, on a fresh install, everything — there's nothing to train on yet) falls through to Ollama (`OLLAMA_URL`), using its structured-output mode so it can only answer with one of the fixed categories.
