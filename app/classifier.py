@@ -36,6 +36,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 from dataclasses import dataclass
 from typing import Literal
@@ -45,6 +46,8 @@ import httpx
 from app import classifier_ml
 from app.categories import CATEGORIES
 from app.ofx_io import Transaction
+
+logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
@@ -101,8 +104,38 @@ async def classify(client: httpx.AsyncClient, description: str) -> str:
         resp.raise_for_status()
         content = resp.json()["message"]["content"]
         category = json.loads(content).get("category", "Uncategorized")
-        return category if category in CATEGORIES else "Uncategorized"
-    except (httpx.HTTPError, KeyError, ValueError):
+        if category not in CATEGORIES:
+            logger.warning(
+                "Ollama returned a category outside the fixed list for %r: %r",
+                description,
+                category,
+            )
+            return "Uncategorized"
+        return category
+    except httpx.ConnectError as exc:
+        logger.error(
+            "Couldn't connect to Ollama at %s while classifying %r: %s. "
+            "Check OLLAMA_URL is correct and reachable from this cluster.",
+            OLLAMA_URL,
+            description,
+            exc,
+        )
+        return "Uncategorized"
+    except httpx.HTTPStatusError as exc:
+        logger.error(
+            "Ollama returned HTTP %s while classifying %r: %s",
+            exc.response.status_code,
+            description,
+            exc.response.text[:500],
+        )
+        return "Uncategorized"
+    except httpx.HTTPError as exc:
+        logger.error("Request to Ollama failed while classifying %r: %s", description, exc)
+        return "Uncategorized"
+    except (KeyError, ValueError) as exc:
+        logger.error(
+            "Couldn't parse Ollama's response while classifying %r: %s", description, exc
+        )
         return "Uncategorized"
 
 

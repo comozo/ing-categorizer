@@ -11,6 +11,7 @@ request is forgotten once the response is sent."""
 from __future__ import annotations
 
 import json
+import logging
 
 from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, PlainTextResponse
@@ -21,6 +22,11 @@ from app import classifier_ml, store
 from app.categories import CATEGORIES
 from app.classifier import classify_all
 from app.ofx_io import OfxFormatError, Transaction, parse_ofx, write_categorized_csv
+
+# Plain stdout logging with timestamps - this is a container, `kubectl logs` is the
+# only place these are ever read from, no need for anything fancier than that.
+logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+logger = logging.getLogger(__name__)
 
 app = FastAPI(title="ing-categorizer")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
@@ -35,12 +41,20 @@ async def index(request: Request):
 @app.post("/upload", response_class=HTMLResponse)
 async def upload(request: Request, file: UploadFile = File(...)):
     raw = await file.read()
+    logger.info("Upload received: filename=%r, size=%d bytes", file.filename, len(raw))
     try:
         transactions = parse_ofx(raw)
     except OfxFormatError as exc:
         return templates.TemplateResponse(request, "index.html", {"error": str(exc)})
 
     classifications = await classify_all(transactions)
+    ollama_count = sum(1 for c in classifications if c.source == "ollama")
+    logger.info(
+        "Parsed %d transactions: %d from the local classifier, %d needed Ollama",
+        len(transactions),
+        len(transactions) - ollama_count,
+        ollama_count,
+    )
 
     rows = [
         {

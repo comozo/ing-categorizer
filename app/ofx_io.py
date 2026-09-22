@@ -12,13 +12,46 @@ from __future__ import annotations
 
 import csv
 import io
+import logging
 from dataclasses import dataclass
 
 from ofxtools.Parser import OFXTree
 
+logger = logging.getLogger(__name__)
+
 
 class OfxFormatError(ValueError):
     """Raised when the uploaded file doesn't look like an OFX/QFX export we can read."""
+
+
+def _diagnose(raw_bytes: bytes, exc: Exception) -> str:
+    """Builds a log line describing *why* parsing failed, without echoing anything
+    that could be transaction data - only format-level structure: byte count, the
+    file's OFX header block (this is metadata like VERSION/ENCODING, never
+    transaction content, whether SGML- or XML-flavored), and whether it looks like
+    CSV was uploaded by mistake despite the prompt. The exception message itself
+    is logged too, but ofxtools' own errors sometimes echo back a snippet of
+    whatever it choked on - so that part only goes to the log, never into the
+    response shown in the browser.
+    """
+    size = len(raw_bytes)
+    try:
+        text = raw_bytes.decode("utf-8-sig", errors="replace")
+    except Exception:
+        text = raw_bytes.decode("latin-1", errors="replace")
+
+    first_line = text.splitlines()[0] if text.splitlines() else ""
+    looks_like_csv = "," in first_line and "<" not in first_line and "OFXHEADER" not in text[:200]
+    header_end = text.find("<OFX")
+    header_block = text[:header_end].strip() if header_end > 0 else "(no <OFX> tag found)"
+
+    return (
+        f"OFX parse failed: {type(exc).__name__}: {exc}\n"
+        f"  file size: {size} bytes\n"
+        f"  first line: {first_line[:200]!r}\n"
+        f"  looks like CSV was uploaded instead of OFX: {looks_like_csv}\n"
+        f"  header block before <OFX>: {header_block[:500]!r}"
+    )
 
 
 @dataclass
@@ -36,9 +69,10 @@ def parse_ofx(raw_bytes: bytes) -> list[Transaction]:
         tree.parse(io.BytesIO(raw_bytes))
         ofx = tree.convert()
     except Exception as exc:
+        logger.error(_diagnose(raw_bytes, exc))
         raise OfxFormatError(
             "Couldn't read this as an OFX/QFX file. Make sure it's exported in that format, "
-            "not CSV."
+            "not CSV. More detail was written to the server log to help track down why."
         ) from exc
 
     if not ofx.statements:
