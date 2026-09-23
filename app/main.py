@@ -19,7 +19,7 @@ from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
 from app import classifier_ml, store
-from app.categories import CATEGORIES
+from app.categories import CATEGORIES, CATEGORY_GROUPS
 from app.classifier import classify_all
 from app.ofx_io import OfxFormatError, Transaction, parse_ofx, write_categorized_csv
 
@@ -76,17 +76,27 @@ async def upload(request: Request, file: UploadFile = File(...)):
     # classifier" already means "confident" - anything Ollama had to answer is,
     # by construction, either genuinely novel or something the classifier
     # wasn't sure about, which is exactly what's worth a second look.
-    needs_review = [r for r, c in zip(rows, classifications) if c.source == "ollama"]
+    #
+    # The review screen works through these one at a time, confident ones
+    # first: quick, low-effort confirms build momentum (and streak) before the
+    # ones that actually need a close look, the same "easy round first" pacing
+    # a game uses to hook a session before raising the difficulty.
     confident = [r for r, c in zip(rows, classifications) if c.source == "classifier"]
+    needs_review = [r for r, c in zip(rows, classifications) if c.source == "ollama"]
+    queue = [{**r, "needs_review": False} for r in confident] + [
+        {**r, "needs_review": True} for r in needs_review
+    ]
 
     return templates.TemplateResponse(
         request,
         "review.html",
         {
-            "needs_review": needs_review,
-            "confident": confident,
+            "queue": queue,
             "categories": CATEGORIES,
+            "category_groups_json": json.dumps(CATEGORY_GROUPS),
             "count": len(rows),
+            "needs_review_count": len(needs_review),
+            "confident_count": len(confident),
         },
     )
 

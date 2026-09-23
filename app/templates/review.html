@@ -7,62 +7,65 @@
   <link rel="stylesheet" href="/static/style.css">
 </head>
 <body>
-  <div class="shell">
+  <div class="shell game-shell">
     <h1>Check the categories</h1>
-    <p class="lede">Fix anything that looks wrong, then download. Nothing is saved on the server beyond what you confirm.</p>
-    <div class="count">{{ count }} transaction{{ "s" if count != 1 else "" }} &middot; {{ needs_review|length }} need a look, {{ confident|length }} already confident</div>
+    <p class="lede">One at a time. Tap a category, watch your streak build. Nothing is saved on the server beyond what you confirm.</p>
 
-    <form action="/download" method="post">
+    <div class="game-header">
+      <button type="button" class="back-btn" id="back-btn" aria-label="Previous transaction" disabled>&larr;</button>
+      <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+      <div class="hud">
+        <span class="hud-item streak" id="streak-pill"><span class="hud-icon">&#128293;</span><span id="streak-count">0</span></span>
+        <span class="hud-item xp"><span class="hud-icon">&#11088;</span><span id="xp-count">0</span> XP</span>
+        <span class="hud-item counter"><span id="progress-count">0</span>/{{ count }}</span>
+      </div>
+    </div>
 
-      {% macro txn_row(row) %}
-        <div class="txn">
-          <div class="date">{{ row.date }}</div>
-          <div class="desc">{{ row.description }}</div>
-          <div class="amount">{{ row.amount }}</div>
-          <select name="category_{{ row.id }}">
+    <form action="/download" method="post" id="review-form">
+      <div class="deck" id="deck">
+        {% for row in queue %}
+        <div class="card" data-needs-review="{{ 'true' if row.needs_review else 'false' }}">
+          <div class="card-top">
+            <span class="card-date">{{ row.date }}</span>
+            <span class="card-amount{% if row.amount and not row.amount.startswith('-') %} amount-credit{% endif %}">{{ row.amount }}</span>
+          </div>
+          <div class="card-desc">{{ row.description }}</div>
+          {% if row.needs_review %}
+            <div class="card-badge badge-review"><span class="hud-icon">&#129300;</span> Ollama's best guess &middot; worth a closer look</div>
+          {% else %}
+            <div class="card-badge badge-confident"><span class="hud-icon">&#9889;</span> {{ row.confidence }}% sure</div>
+          {% endif %}
+
+          <select name="category_{{ row.id }}" class="native-select">
             {% for cat in categories %}
               <option value="{{ cat }}" {% if cat == row.category %}selected{% endif %}>{{ cat }}</option>
             {% endfor %}
           </select>
+          <div class="chip-grid" data-suggested="{{ row.category }}"></div>
+          <button type="button" class="skip-btn" data-skip>Skip &#9193;</button>
+
           <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
           <input type="hidden" name="desc_{{ row.id }}" value="{{ row.description }}">
         </div>
-      {% endmacro %}
+        {% endfor %}
 
-      {% if needs_review %}
-      <details class="section" open>
-        <summary>⚠ Needs your review ({{ needs_review|length }})</summary>
-        <div class="txn-list">
-          {% for row in needs_review %}{{ txn_row(row) }}{% endfor %}
+        <div class="card summary-card" id="summary-card">
+          <div class="summary-emoji">&#127937;</div>
+          <h2>Run complete!</h2>
+          <p class="summary-count">{{ count }} transaction{{ "s" if count != 1 else "" }} categorized</p>
+          <div class="summary-stats">
+            <div class="summary-stat"><span class="summary-stat-value" id="final-xp">0</span><span class="summary-stat-label">XP earned</span></div>
+            <div class="summary-stat"><span class="summary-stat-value">&#128293; <span id="final-streak">0</span></span><span class="summary-stat-label">best streak</span></div>
+          </div>
+          <button type="submit" class="download-btn">Download categorized CSV</button>
         </div>
-      </details>
-      {% endif %}
-
-      {% if confident %}
-      <details class="section confident-section" {% if not needs_review %}open{% endif %}>
-        <summary>&check; Already confident ({{ confident|length }})</summary>
-        <p class="section-note">The local classifier is sure about these &mdash; worth a glance, not a close read.</p>
-        <div class="txn-list">
-          {% for row in confident %}
-            <div class="txn compact">
-              <div class="desc">{{ row.description }}<span class="confidence">{{ row.confidence }}%</span></div>
-              <select name="category_{{ row.id }}">
-                {% for cat in categories %}
-                  <option value="{{ cat }}" {% if cat == row.category %}selected{% endif %}>{{ cat }}</option>
-                {% endfor %}
-              </select>
-              <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
-              <input type="hidden" name="desc_{{ row.id }}" value="{{ row.description }}">
-            </div>
-          {% endfor %}
-        </div>
-      </details>
-      {% endif %}
-
-      <button type="submit">Download categorized CSV</button>
+      </div>
     </form>
 
     <footer><a href="/">&larr; Start over</a></footer>
   </div>
+
+  <script id="category-groups-data" type="application/json">{{ category_groups_json | safe }}</script>
+  <script src="/static/game.js"></script>
 </body>
 </html>

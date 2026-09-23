@@ -67,7 +67,7 @@ _SYSTEM_PROMPT = (
     "details. Rules:\n"
     "- If the description indicates money moving between the user's own ING "
     "accounts (e.g. contains 'transfer', 'TFR', 'Everyday', 'Savings Maximiser', "
-    "'Term Deposit'), use Transfer.\n"
+    "'Term Deposit'), use Transfers.\n"
     "- If the description mentions interest credited, use Interest.\n"
     "- If you are not reasonably confident, use Uncategorized rather than guessing.\n"
     "Respond with only the JSON object described by the schema."
