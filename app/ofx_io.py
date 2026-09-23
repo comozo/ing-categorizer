@@ -21,20 +21,27 @@ from ofxtools.Parser import OFXTree
 logger = logging.getLogger(__name__)
 
 # ofxtools enforces several fields as hard-required that we never actually read - we only ever
-# pull statement.transactions out of a parsed file, nothing about the statement period or which
-# account it's for. ING Australia's real export omits both of the fields below entirely (each
-# confirmed against a real upload, one at a time, as each became the next error in turn):
+# pull statement.transactions out of a parsed file, nothing about the statement period, which
+# account it's for, or its balance. ING Australia's real export omits all three of the fields
+# below entirely. The first two were each confirmed against a real upload, one at a time, as
+# each became the next error in turn; LEDGERBAL was caught ahead of time instead, by walking
+# ofxtools' own model spec for every aggregate a bank STMTTRNRS message touches and checking
+# ING's export against each one's required fields, rather than waiting for it to crash:
 #
 #   - <BANKTRANLIST>'s DTSTART/DTEND (the statement period)
 #   - <STMTRS>'s BANKACCTFROM (bank id / account id / account type)
+#   - <STMTRS>'s LEDGERBAL (balance amount / as-of date) - has no optional fields of its own
+#     to fall back on, unlike the other two, so a missing LEDGERBAL has no lenient path at all
 #
 # ofxtools has no API to relax these, so each gets a harmless placeholder injected before
 # parsing - but only when genuinely missing; a well-formed block is left untouched. ofxtools
 # also enforces field *order* (confirmed by trial: inserting BANKACCTFROM before CURDEF instead
 # of after raises "Elements out of order"), so each patch's anchor and insertion point respects
-# where the chart's own spec says that field belongs.
+# where the chart's own spec says that field belongs - STMTRS.spec order is curdef, bankacctfrom,
+# banktranlist, banktranlistp, ledgerbal, availbal, ..., so LEDGERBAL anchors on BANKTRANLIST's
+# closing tag (ING never sends BANKTRANLISTP or AVAILBAL, which would otherwise sit between them).
 #
-# Add another entry here, following the same shape, if a real file surfaces a third one -
+# Add another entry here, following the same shape, if a real file surfaces a fourth one -
 # that's the expected way this list grows, not a sign something's wrong with the approach.
 _REQUIRED_FIELD_PATCHES: list[tuple[str, re.Pattern[str], str]] = [
     (
@@ -50,6 +57,11 @@ _REQUIRED_FIELD_PATCHES: list[tuple[str, re.Pattern[str], str]] = [
         re.compile(r"(<CURDEF>[A-Z]{3})(?!\s*<BANKACCTFROM)"),
         r"\1<BANKACCTFROM><BANKID>000000000</BANKID><ACCTID>UNKNOWN</ACCTID>"
         r"<ACCTTYPE>CHECKING</ACCTTYPE></BANKACCTFROM>",
+    ),
+    (
+        "<STMTRS> missing LEDGERBAL",
+        re.compile(r"(</BANKTRANLIST>)(?!\s*<LEDGERBAL>)"),
+        r"\1<LEDGERBAL><BALAMT>0.00</BALAMT><DTASOF>19700101000000</DTASOF></LEDGERBAL>",
     ),
 ]
 
