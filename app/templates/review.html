@@ -9,63 +9,104 @@
 <body>
   <div class="shell game-shell">
     <h1>Check the categories</h1>
-    <p class="lede">One at a time. Tap a category, watch your streak build. Nothing is saved on the server beyond what you confirm.</p>
+    <p class="lede">
+      {{ transaction_count }} transactions from {{ deck|length + remembered|length }} merchants.
+      One card per merchant: your pick applies to all of its transactions.
+      {% if remembered %}{{ remembered|length }} merchant{{ "s" if remembered|length != 1 else "" }} ({{ remembered_txn_count }} transactions) you've confirmed before {{ "were" if remembered|length != 1 else "was" }} filled in already.{% endif %}
+      Every answer is saved as you go, so you can close this and pick up later.
+    </p>
 
     <div class="game-header">
-      <button type="button" class="back-btn" id="back-btn" aria-label="Previous transaction" disabled>&larr;</button>
+      <button type="button" class="back-btn" id="back-btn" aria-label="Previous merchant" disabled>&larr;</button>
       <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
       <div class="hud">
         <span class="hud-item streak" id="streak-pill"><span class="hud-icon">&#128293;</span><span id="streak-count">0</span></span>
         <span class="hud-item xp"><span class="hud-icon">&#11088;</span><span id="xp-count">0</span> XP</span>
-        <span class="hud-item counter"><span id="progress-count">0</span>/{{ count }}</span>
+        <span class="hud-item counter"><span id="progress-count">0</span>/{{ deck|length }}</span>
       </div>
     </div>
+    <p class="save-state" id="save-state" role="status" aria-live="polite"></p>
 
-    <form action="/download" method="post" id="review-form">
-      <div class="deck" id="deck">
-        {% for row in queue %}
-        <div class="card" data-needs-review="{{ 'true' if row.needs_review else 'false' }}">
+    <form action="/review/{{ session.id }}/download" method="post" id="review-form">
+      <div class="deck" id="deck"
+           data-session="{{ session.id }}"
+           data-xp="{{ session.stats.xp }}"
+           data-streak="{{ session.stats.streak }}"
+           data-best-streak="{{ session.stats.best_streak }}">
+        {% for i, m in deck %}
+        <div class="card" data-index="{{ i }}" data-count="{{ m.count }}"
+             data-needs-review="{{ 'true' if m.source == 'ollama' else 'false' }}"
+             data-confirmed="{{ 'true' if m.category is not none else 'false' }}">
           <div class="card-top">
-            <span class="card-date">{{ row.date }}</span>
-            <span class="card-amount{% if row.amount and not row.amount.startswith('-') %} amount-credit{% endif %}">{{ row.amount }}</span>
+            <span class="card-date">{{ m.first_date }}{% if m.last_date != m.first_date %} &ndash; {{ m.last_date }}{% endif %}</span>
+            <span class="card-amount{% if not m.total.startswith('-') %} amount-credit{% endif %}">{{ m.total }}</span>
           </div>
-          <div class="card-desc">{{ row.description }}</div>
-          {% if row.needs_review %}
+          <div class="card-desc">{{ m.key }}</div>
+          {% if m.count > 1 or m.sample|upper != m.key %}
+          <div class="card-sample">{% if m.count > 1 %}<span class="card-count">&times;{{ m.count }} transactions</span>{% endif %}{% if m.count > 1 and m.sample|upper != m.key %} &middot; {% endif %}{% if m.sample|upper != m.key %}{{ m.sample }}{% endif %}</div>
+          {% endif %}
+          {% if m.source == "ollama" %}
             <div class="card-badge badge-review"><span class="hud-icon">&#129300;</span> Ollama's best guess &middot; worth a closer look</div>
           {% else %}
-            <div class="card-badge badge-confident"><span class="hud-icon">&#9889;</span> {{ row.confidence }}% sure</div>
+            <div class="card-badge badge-confident"><span class="hud-icon">&#9889;</span> {{ m.confidence }}% sure</div>
           {% endif %}
 
-          <select name="category_{{ row.id }}" class="native-select">
+          {% if m.suggested != "Uncategorized" %}
+          <button type="button" class="accept-btn" data-accept>&#10003; Looks right: {{ m.suggested }}</button>
+          <p class="chip-hint">or pick another</p>
+          {% endif %}
+
+          {% set current = m.category if m.category is not none else m.suggested %}
+          <select name="category_{{ i }}" class="native-select">
             {% for cat in categories %}
-              <option value="{{ cat }}" {% if cat == row.category %}selected{% endif %}>{{ cat }}</option>
+              <option value="{{ cat }}" {% if cat == current %}selected{% endif %}>{{ cat }}</option>
             {% endfor %}
           </select>
-          <div class="chip-grid" data-suggested="{{ row.category }}"></div>
-          <button type="button" class="skip-btn" data-skip>Skip &#9193;</button>
-
-          <input type="hidden" name="raw_{{ row.id }}" value='{{ row.raw_json }}'>
-          <input type="hidden" name="desc_{{ row.id }}" value="{{ row.description }}">
+          <div class="chip-grid" data-suggested="{{ m.suggested }}" data-picked="{{ m.category or '' }}"></div>
+          <div class="card-actions">
+            <button type="button" class="skip-btn" data-skip>Skip &#9193;</button>
+            <button type="button" class="skip-btn" data-accept-rest>Accept every remaining AI pick</button>
+          </div>
+          <p class="key-hint">Enter accepts the AI pick &middot; S skips &middot; &larr; goes back</p>
         </div>
         {% endfor %}
 
         <div class="card summary-card" id="summary-card">
           <div class="summary-emoji">&#127937;</div>
           <h2>Run complete!</h2>
-          <p class="summary-count">{{ count }} transaction{{ "s" if count != 1 else "" }} categorized</p>
+          <p class="summary-count">{{ transaction_count }} transaction{{ "s" if transaction_count != 1 else "" }} categorized</p>
           <div class="summary-stats">
             <div class="summary-stat"><span class="summary-stat-value" id="final-xp">0</span><span class="summary-stat-label">XP earned</span></div>
             <div class="summary-stat"><span class="summary-stat-value">&#128293; <span id="final-streak">0</span></span><span class="summary-stat-label">best streak</span></div>
           </div>
+
+          {% if remembered %}
+          <details class="remembered">
+            <summary>Filled in from what you confirmed before ({{ remembered|length }})</summary>
+            <div class="remembered-list">
+              {% for i, m in remembered %}
+              <label class="remembered-row">
+                <span class="remembered-name">{{ m.key }}{% if m.count > 1 %} <span class="card-count">&times;{{ m.count }}</span>{% endif %}</span>
+                <select name="category_{{ i }}" data-index="{{ i }}" class="remembered-select">
+                  {% for cat in categories %}
+                    <option value="{{ cat }}" {% if cat == m.category %}selected{% endif %}>{{ cat }}</option>
+                  {% endfor %}
+                </select>
+              </label>
+              {% endfor %}
+            </div>
+          </details>
+          {% endif %}
+
           <button type="submit" class="download-btn">Download categorized CSV</button>
         </div>
       </div>
     </form>
 
-    <footer><a href="/">&larr; Start over</a></footer>
+    <footer><a href="/">&larr; All reviews</a></footer>
   </div>
 
-  <script id="category-groups-data" type="application/json">{{ category_groups_json | safe }}</script>
+  <script id="category-groups-data" type="application/json">{{ category_groups | tojson }}</script>
   <script src="/static/game.js"></script>
 </body>
 </html>

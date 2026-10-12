@@ -15,6 +15,7 @@ from sklearn.linear_model import LogisticRegression
 from sklearn.pipeline import Pipeline
 
 from app.categories import CATEGORIES
+from app.merchant import merchant_key
 from app.store import MODEL_PATH, load_pairs
 
 # Below this many confirmed examples, don't trust the classifier at all - too
@@ -49,7 +50,9 @@ def retrain() -> Pipeline | None:
 
     descriptions, categories = zip(*pairs)
     pipeline = _build_pipeline()
-    pipeline.fit(list(descriptions), list(categories))
+    # Fit on merchant keys, not raw descriptions: the receipt/date/card tail
+    # is unique per transaction and only adds noise features.
+    pipeline.fit([merchant_key(d) for d in descriptions], list(categories))
 
     MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
     joblib.dump(pipeline, MODEL_PATH)
@@ -63,7 +66,9 @@ _cached_model_loaded = False
 def _get_model() -> Pipeline | None:
     global _cached_model, _cached_model_loaded
     if not _cached_model_loaded:
-        _cached_model = joblib.load(MODEL_PATH) if MODEL_PATH.exists() else None
+        # No model file but pairs on disk means an upgrade from the v1 model
+        # (see MODEL_PATH): retrain once rather than wait for the next download.
+        _cached_model = joblib.load(MODEL_PATH) if MODEL_PATH.exists() else retrain()
         _cached_model_loaded = True
     return _cached_model
 
@@ -74,14 +79,15 @@ def invalidate_cache() -> None:
     _cached_model_loaded = False
 
 
-def predict(description: str) -> tuple[str, float] | None:
-    """Returns (category, confidence) if the classifier is confident enough,
-    or None if it should fall back to Ollama (no model yet, or unsure)."""
+def predict(key: str) -> tuple[str, float] | None:
+    """Returns (category, confidence) for a merchant key (app/merchant.py) if
+    the classifier is confident enough, or None if it should fall back to
+    Ollama (no model yet, or unsure)."""
     model = _get_model()
     if model is None:
         return None
 
-    probabilities = model.predict_proba([description])[0]
+    probabilities = model.predict_proba([key])[0]
     best_idx = probabilities.argmax()
     confidence = float(probabilities[best_idx])
     category = model.classes_[best_idx]

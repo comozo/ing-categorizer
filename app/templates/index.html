@@ -15,6 +15,31 @@
       <div class="error">{{ error }}</div>
     {% endif %}
 
+    {% if sessions %}
+    <section class="card sessions">
+      <h2>Your reviews</h2>
+      <ul class="session-list">
+        {% for s in sessions %}
+        <li class="session-row">
+          <div class="session-info">
+            <span class="session-name">{{ s.filename }}</span>
+            <span class="session-meta">
+              {{ s.created_at[:10] }} &middot; {{ s.transaction_count }} transactions &middot;
+              {% if s.completed %}downloaded{% elif s.answered == s.deck_size %}ready to download{% else %}{{ s.answered }}/{{ s.deck_size }} merchants checked{% endif %}
+            </span>
+          </div>
+          <div class="session-actions">
+            <a class="session-open" href="/review/{{ s.id }}">{{ "Open" if s.completed else "Resume" }}</a>
+            <form action="/review/{{ s.id }}/discard" method="post">
+              <button type="submit" class="session-discard" aria-label="Discard {{ s.filename }}">Discard</button>
+            </form>
+          </div>
+        </li>
+        {% endfor %}
+      </ul>
+    </section>
+    {% endif %}
+
     <form class="card" action="/upload" method="post" enctype="multipart/form-data">
       <div class="dropzone">
         Choose your exported OFX/QFX file
@@ -24,7 +49,7 @@
       <button type="submit">Categorize</button>
     </form>
 
-    <footer>Runs entirely on your own cluster. No accounts, no cloud, no per-transaction cost.</footer>
+    <footer>Runs entirely on your own cluster. No accounts, no cloud, no per-transaction cost. Reviews are deleted after {{ retention_days }} days.</footer>
   </div>
 </body>
 </html>

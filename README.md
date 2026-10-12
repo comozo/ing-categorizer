@@ -7,13 +7,15 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 ## How it works
 
 1. Upload an OFX or QFX export. Unlike CSV, OFX has typed fields — a signed amount, a real date, a stable per-transaction `FITID` — so there's no column-name guesswork the way there was with CSV (that parser existed briefly; see git history if you need a CSV-shaped starting point again). ING Australia's own export omits several fields that `ofxtools` otherwise treats as hard-required — `<BANKTRANLIST>`'s `DTSTART`/`DTEND` (the statement period), `<STMTRS>`'s `BANKACCTFROM` (which bank/account the statement is for), and `<STMTRS>`'s `LEDGERBAL` (balance amount/as-of date) — worked around by patching in harmless placeholders before parsing whenever a field is genuinely missing (see `app/ofx_io.py` if a future export starts omitting something else — the fix is a one-line addition to a list there). OFX 1.x carries no schema in the file itself to check exports against up front, so these were found by cross-checking a real export against `ofxtools`' own model spec for every aggregate a bank statement message touches, rather than one at a time as each became a production crash.
-2. Each transaction is classified against a fixed, grouped category list (see `app/categories.py` — six groups: Housing, Food & Dining, Transport, Lifestyle, Other, Income) by a **hybrid** pipeline:
-   - a small local scikit-learn classifier (TF-IDF + logistic regression), trained on categorizations you've confirmed on past uploads, gets first refusal — no network call at all;
-   - anything it isn't confident about (or, on a fresh install, everything — there's nothing to train on yet) falls through to Ollama (`OLLAMA_URL`), using its structured-output mode so it can only answer with one of the fixed categories.
-   - Ollama only ever sees the **description text** — never the date, the amount, or which account a transaction came from. And it's only called once per **unique** description in a batch, not once per transaction: five transactions at the same supermarket become one Ollama call, not five, with the result applied to all five.
-3. Review screen works through transactions **one at a time**, not as a flat table — confident ones first (quick, low-effort taps that build a streak) then whatever actually needed Ollama (worth a closer look, worth more XP). Tap a category chip — the AI's suggestion is pre-highlighted — and the deck auto-advances; a progress bar, streak counter and XP total keep the pace visible. Nothing is silently applied: every card still shows its own category picker (a plain `<select>`, which is also the no-JS fallback — see `app/static/game.js`), and a card can be revisited with the back arrow before the final download.
-4. Download the same CSV with a `Category` column appended, ready to import into whichever finance app you're using.
-5. Every row you confirmed on the review screen (except `Uncategorized`) is added to the classifier's training set and it retrains immediately — so the more you use this, the less it needs Ollama at all. This is the only state kept between requests: a small CSV of (description, category) pairs and the trained model, nothing else.
+2. Transactions are grouped by **merchant** before anything else happens. ING appends a receipt number, date and card number to every description, so the same shop never repeats verbatim; `app/merchant.py` strips that tail (and store numbers) so "WOOLWORTHS 1234 SYDNEY - Visa Purchase - Receipt …" and "WOOLWORTHS 5678 SYDNEY - …" both become `WOOLWORTHS SYDNEY`. Everything downstream (classification, review, learning) works per merchant, not per transaction.
+3. Each merchant is classified against a fixed, grouped category list (see `app/categories.py` — six groups: Housing, Food & Dining, Transport, Lifestyle, Other, Income) by the first source that can answer:
+   - **memory** — a merchant you've confirmed on a past upload is filled in automatically and never asked about again;
+   - a small local scikit-learn classifier (TF-IDF + logistic regression on merchant keys), trained on everything you've confirmed — no network call;
+   - anything it isn't confident about (or, on a fresh install, everything) falls through to Ollama (`OLLAMA_URL`), using its structured-output mode so it can only answer with one of the fixed categories. One call per unknown merchant, at most `OLLAMA_CONCURRENCY` at a time.
+   - Ollama only ever sees **one description per merchant** — never the date, the amount, or which account a transaction came from.
+4. The review screen shows **one card per merchant** — the classifier's confident picks first, then whatever needed Ollama, biggest merchants first within each. One tap on "Looks right" confirms the AI pick for every transaction of that merchant; the chip grid picks something else; "Accept every remaining AI pick" finishes the deck in one go. On a keyboard, Enter accepts, S skips, ← goes back. Remembered merchants skip the deck and are listed on the final card, where any of them can still be changed. The plain `<select>` per merchant is the no-JS fallback (see `app/static/game.js`).
+5. **Every answer is checkpointed** to a review session on the data volume as you make it (`app/sessions.py`). Closing the tab, losing the connection or a pod restart loses nothing: the home page lists every review, and "Resume" reopens it at the first unanswered merchant with XP and streak intact. Sessions hold the parsed statement (dates and amounts included, needed to build the CSV) and are deleted after `SESSION_RETENTION_DAYS`, or immediately with "Discard".
+6. Download the CSV with a `Category` column appended, ready to import into whichever finance app you're using. Every confirmed merchant (except `Uncategorized`) is added to the training set and the classifier retrains — so each upload leaves fewer merchants to review on the next one. Training data is just (description, category) pairs.
 
 ## Configuration
 
@@ -21,9 +23,11 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 |---|---|---|
 | `OLLAMA_URL` | `http://ollama:11434` | Base URL of the Ollama server |
 | `OLLAMA_MODEL` | `qwen2.5:3b` | Model to classify with — keep this small, this is meant to run on CPU-only hardware |
-| `DATA_DIR` | `/data` | Where the training pairs and trained classifier are persisted |
+| `DATA_DIR` | `/data` | Where the training pairs, trained classifier and review sessions are persisted |
 | `MIN_TRAINING_EXAMPLES` | `20` | Below this many confirmed examples, skip the classifier entirely and use Ollama |
 | `CONFIDENCE_THRESHOLD` | `0.65` | Below this predicted probability, treat the classifier as unsure and fall back to Ollama |
+| `OLLAMA_CONCURRENCY` | `4` | Maximum Ollama requests in flight at once; more just queue inside Ollama until they time out |
+| `SESSION_RETENTION_DAYS` | `30` | Review sessions untouched for longer than this are deleted |
 
 ## Local development
 

@@ -77,6 +77,44 @@ button:active, input[type="submit"]:active { transform: scale(0.98); }
   font-size: 14px;
 }
 
+/* ---------- home page: saved reviews ---------- */
+
+.sessions h2 { margin: 0 0 12px; font-size: 16px; }
+.session-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 10px; }
+.session-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px;
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 12px;
+}
+.session-info { display: flex; flex-direction: column; min-width: 0; }
+.session-name { font-weight: 700; overflow-wrap: anywhere; }
+.session-meta { font-size: 12.5px; color: var(--ink-muted); }
+.session-actions { display: flex; align-items: center; gap: 10px; flex: 0 0 auto; }
+.session-actions form { margin: 0; }
+.session-open {
+  color: white;
+  background: var(--accent);
+  border-radius: 10px;
+  padding: 8px 14px;
+  font-weight: 700;
+  font-size: 13.5px;
+  text-decoration: none;
+}
+.session-discard {
+  width: auto;
+  background: none;
+  box-shadow: none;
+  color: var(--ink-muted);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 8px 4px;
+}
+
 footer {
   text-align: center;
   color: var(--ink-muted);
@@ -181,6 +219,12 @@ footer a { color: var(--ink-muted); }
 .card-amount.amount-credit { color: var(--green); }
 
 .card-desc { font-size: 18px; font-weight: 700; line-height: 1.35; }
+.card-sample {
+  font-size: 12.5px;
+  color: var(--ink-muted);
+  overflow-wrap: anywhere;
+}
+.card-count { color: var(--gold); font-weight: 700; }
 
 .card-badge {
   align-self: flex-start;
@@ -213,6 +257,23 @@ body:not(.js-active) .deck .card { display: flex; }
 body:not(.js-active) .game-header { display: none; }
 body:not(.js-active) .summary-emoji,
 body:not(.js-active) .summary-count { display: none; }
+
+/* The common case - the AI got it right - is one big tap, no hunting
+   through the chip grid for the highlighted one. */
+.accept-btn {
+  background: linear-gradient(135deg, #16a34a, var(--green));
+  box-shadow: 0 6px 18px rgba(34, 197, 94, 0.3);
+  font-size: 16px;
+  padding: 15px 18px;
+}
+.chip-hint {
+  margin: 2px 0 0;
+  text-align: center;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+body:not(.js-active) .accept-btn,
+body:not(.js-active) .chip-hint { display: none; }
 
 .chip-grid {
   display: flex;
@@ -289,6 +350,58 @@ body:not(.js-active) .summary-count { display: none; }
   padding: 6px 10px;
 }
 .skip-btn:active { transform: none; opacity: 0.7; }
+
+.card-actions {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 4px 12px;
+}
+
+.key-hint {
+  margin: 0;
+  text-align: center;
+  font-size: 11.5px;
+  color: var(--ink-muted);
+}
+/* Keyboard shortcuts mean nothing on a phone. */
+@media (hover: none) { .key-hint { display: none; } }
+body:not(.js-active) .card-actions,
+body:not(.js-active) .key-hint { display: none; }
+
+.save-state {
+  min-height: 18px;
+  margin: -10px 0 8px;
+  text-align: right;
+  font-size: 12px;
+  color: var(--ink-muted);
+}
+.save-state.save-error { color: #ffb494; }
+
+.remembered {
+  width: 100%;
+  margin-bottom: 18px;
+  text-align: left;
+  font-size: 13.5px;
+}
+.remembered summary { cursor: pointer; color: var(--ink-muted); font-weight: 600; }
+.remembered-list { display: flex; flex-direction: column; gap: 8px; margin-top: 12px; }
+.remembered-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.remembered-name { overflow-wrap: anywhere; }
+.remembered-select {
+  flex: 0 0 auto;
+  max-width: 50%;
+  padding: 6px 8px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-raised);
+  color: var(--ink);
+}
 
 .summary-card {
   align-items: center;

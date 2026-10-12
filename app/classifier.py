@@ -1,4 +1,4 @@
-"""Calls a local Ollama model to classify one *unique description* at a time.
+"""Calls a local Ollama model to classify one *merchant* at a time.
 
 Uses Ollama's structured-output mode (a JSON schema passed as `format`) so a
 small model's output is constrained to exactly one of the fixed categories,
@@ -12,24 +12,27 @@ why this is safe to point at a shared/remote Ollama at all:
   text is already the only field the categorization rules below actually
   need; everything else would just be extra information leaving the machine
   for no benefit.
-- **Deduplication.** A statement commonly has the same merchant description
-  repeated many times (the same supermarket every week, the same
-  subscription every month). Ollama is called once per *unique* description
-  in a batch, never once per transaction - classify_all() below does the
-  dedup and fans the single result back out to every matching transaction.
-  The unique calls that do need Ollama run concurrently (asyncio.gather),
-  not one at a time - this is network-round-trip-bound, not CPU-bound on
-  whatever machine Ollama runs on, so there's no reason to serialize it.
+- **Deduplication.** A statement commonly has the same merchant many times
+  over (the same supermarket every week, the same subscription every
+  month), each with a unique receipt/date tail. Classification works on
+  merchant keys (app/merchant.py), never on transactions: Ollama is called
+  once per *unknown merchant*, with one representative description.
+  Those calls run concurrently, capped by OLLAMA_CONCURRENCY - an unbounded
+  burst just queues inside Ollama until the later requests hit their
+  timeout and come back Uncategorized.
 
-classify_all() is the hybrid entry point main.py actually calls: the local
-scikit-learn classifier (app/classifier_ml.py) gets first refusal on every
-transaction - trained on past human-confirmed categorizations, no network
-call at all - and only descriptions it isn't confident about (or, on a
-fresh install, everything) go to Ollama, deduplicated as above.
+classify_merchants() is the entry point main.py calls. Each merchant goes to
+the first source that can answer it:
 
-Each result carries a confidence/source, not just a bare category - that's
-what main.py uses to triage the review screen so a human only has to look
-closely at what's actually uncertain.
+1. memory - an exact merchant-key match against what you've confirmed
+   before (store.known_merchants()). No guessing, no network call.
+2. classifier - the local scikit-learn model (app/classifier_ml.py), when
+   it's confident enough.
+3. ollama - everything else.
+
+Each result carries its source and confidence, which main.py uses to decide
+what goes on the review deck at all: memory hits are filled in without
+asking.
 """
 
 from __future__ import annotations
@@ -43,14 +46,14 @@ from typing import Literal
 
 import httpx
 
-from app import classifier_ml
+from app import classifier_ml, store
 from app.categories import CATEGORIES
-from app.ofx_io import Transaction
 
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
+OLLAMA_CONCURRENCY = int(os.environ.get("OLLAMA_CONCURRENCY", "4"))
 
 _RESPONSE_SCHEMA = {
     "type": "object",
@@ -80,7 +83,7 @@ class Classification:
     # None for Ollama - it commits to one answer via structured output, it
     # doesn't expose a calibrated probability the way the local classifier does.
     confidence: float | None
-    source: Literal["classifier", "ollama"]
+    source: Literal["memory", "classifier", "ollama"]
 
 
 async def classify(client: httpx.AsyncClient, description: str) -> str:
@@ -139,30 +142,35 @@ async def classify(client: httpx.AsyncClient, description: str) -> str:
         return "Uncategorized"
 
 
-async def classify_all(transactions: list[Transaction]) -> list[Classification]:
-    """Local classifier first, Ollama only for what it won't commit to - and even
-    then, one concurrent Ollama call per unique description in the batch, not
-    one call per transaction."""
-    results: list[Classification | None] = [None] * len(transactions)
-    needs_ollama: list[int] = []
+async def classify_merchants(merchants: dict[str, str]) -> dict[str, Classification]:
+    """Classifies each merchant key, given one representative description per
+    key: memory first, then the local classifier, then Ollama (concurrent,
+    capped at OLLAMA_CONCURRENCY) for whatever's left."""
+    memory = store.known_merchants()
+    results: dict[str, Classification] = {}
+    needs_ollama: list[str] = []
 
-    for i, txn in enumerate(transactions):
-        guess = classifier_ml.predict(txn.description)
-        if guess is not None:
+    for key in merchants:
+        if key in memory:
+            results[key] = Classification(memory[key], 1.0, "memory")
+        elif (guess := classifier_ml.predict(key)) is not None:
             category, confidence = guess
-            results[i] = Classification(category, confidence, "classifier")
+            results[key] = Classification(category, confidence, "classifier")
         else:
-            needs_ollama.append(i)
+            needs_ollama.append(key)
 
     if needs_ollama:
-        unique_descriptions = list({transactions[i].description for i in needs_ollama})
+        limit = asyncio.Semaphore(OLLAMA_CONCURRENCY)
+
+        async def bounded(client: httpx.AsyncClient, description: str) -> str:
+            async with limit:
+                return await classify(client, description)
+
         async with httpx.AsyncClient() as client:
             categories = await asyncio.gather(
-                *(classify(client, description) for description in unique_descriptions)
+                *(bounded(client, merchants[key]) for key in needs_ollama)
             )
-        classified = dict(zip(unique_descriptions, categories))
-        for i in needs_ollama:
-            category = classified[transactions[i].description]
-            results[i] = Classification(category, None, "ollama")
+        for key, category in zip(needs_ollama, categories):
+            results[key] = Classification(category, None, "ollama")
 
-    return results  # type: ignore[return-value]
+    return results
