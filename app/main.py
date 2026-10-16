@@ -1,8 +1,8 @@
 """ing-categorizer: upload an ING Australia OFX export, get it back with an
 AI-suggested category per transaction, review/edit on a phone or desktop,
 download the result. No transaction data ever leaves the LAN - the local
-classifier runs in-process and Ollama only ever sees one description per
-unknown merchant.
+classifier runs in-process and Ollama only ever sees an unknown merchant's
+cleaned name and whether money went in or out (see app/classifier.py).
 
 Two kinds of state are persisted, both on DATA_DIR:
 
@@ -82,8 +82,13 @@ async def upload(request: Request, file: UploadFile = File(...)):
     for txn in transactions:
         by_merchant.setdefault(merchant_key(txn.description), []).append(txn)
 
+    # A merchant's direction is the sign of its net total: a shop with one
+    # refund among ten purchases is still somewhere money goes out to.
     classifications = await classify_merchants(
-        {key: txns[0].description for key, txns in by_merchant.items()}
+        {
+            key: ("in" if not _total([t.amount for t in txns]).startswith("-") else "out")
+            for key, txns in by_merchant.items()
+        }
     )
     counts = {source: 0 for source in ("memory", "classifier", "ollama")}
     for c in classifications.values():

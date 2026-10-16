@@ -7,16 +7,20 @@ rather than parsed out of free text.
 Two things this module is deliberately careful about, both load-bearing for
 why this is safe to point at a shared/remote Ollama at all:
 
-- **Minimal payload.** Only the transaction description crosses the network -
-  never the date, the amount, or the account it came from. The description
-  text is already the only field the categorization rules below actually
-  need; everything else would just be extra information leaving the machine
-  for no benefit.
+- **Minimal payload.** Per merchant, only the cleaned merchant name
+  (app/merchant.py - receipt numbers, dates and card digits already
+  stripped) and whether money went out or came in cross the network - never
+  a date, an amount, or the account. Direction is the one extra field worth
+  its cost: without it a small model can't tell a refund from a purchase or
+  a salary from a transfer. The prompt also carries up to FEW_SHOT_EXAMPLES
+  of your own confirmed (merchant -> category) answers, nearest to the
+  merchant being asked about, so the model follows your conventions instead
+  of guessing at them.
 - **Deduplication.** A statement commonly has the same merchant many times
   over (the same supermarket every week, the same subscription every
   month), each with a unique receipt/date tail. Classification works on
   merchant keys (app/merchant.py), never on transactions: Ollama is called
-  once per *unknown merchant*, with one representative description.
+  once per *unknown merchant*, never once per transaction.
   Those calls run concurrently, capped by OLLAMA_CONCURRENCY - an unbounded
   burst just queues inside Ollama until the later requests hit their
   timeout and come back Uncategorized.
@@ -45,36 +49,84 @@ from dataclasses import dataclass
 from typing import Literal
 
 import httpx
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import linear_kernel
 
 from app import classifier_ml, store
-from app.categories import CATEGORIES
+from app.categories import CATEGORIES, CATEGORY_HINTS
 
 logger = logging.getLogger(__name__)
 
 OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://ollama:11434")
 OLLAMA_MODEL = os.environ.get("OLLAMA_MODEL", "qwen2.5:3b")
 OLLAMA_CONCURRENCY = int(os.environ.get("OLLAMA_CONCURRENCY", "4"))
+FEW_SHOT_EXAMPLES = int(os.environ.get("FEW_SHOT_EXAMPLES", "30"))
 
+Direction = Literal["out", "in"]
+
+# Uncategorized is left out on purpose: offered an "I'm not sure" answer, a 3B
+# model takes it for anything slightly unusual, which is the review screen's
+# job to catch, not the model's. Other is the honest "nothing fits".
+_ANSWERS = [c for c in CATEGORIES if c != "Uncategorized"]
 _RESPONSE_SCHEMA = {
     "type": "object",
-    "properties": {"category": {"type": "string", "enum": CATEGORIES}},
+    "properties": {"category": {"type": "string", "enum": _ANSWERS}},
     "required": ["category"],
 }
 
-_SYSTEM_PROMPT = (
-    "You categorize a bank transaction description from an Australian ING account "
-    "(an everyday transaction account, a term deposit, or a variable-rate savings "
-    "account) into exactly one category from this fixed list:\n"
-    f"{', '.join(CATEGORIES)}\n\n"
-    "You are given only the transaction description - no date, no amount, no account "
-    "details. Rules:\n"
-    "- If the description indicates money moving between the user's own ING "
-    "accounts (e.g. contains 'transfer', 'TFR', 'Everyday', 'Savings Maximiser', "
-    "'Term Deposit'), use Transfers.\n"
-    "- If the description mentions interest credited, use Interest.\n"
-    "- If you are not reasonably confident, use Uncategorized rather than guessing.\n"
-    "Respond with only the JSON object described by the schema."
+_INSTRUCTIONS = (
+    "You categorize transactions from an Australian ING bank account. For each one you get "
+    "the merchant name as it appears on the statement (receipt numbers, dates and card "
+    "digits removed) and whether money went out or came in. Answer with the single "
+    "category below that fits best; use Other only when none of them does.\n\n"
+    "Categories:\n"
+    + "\n".join(f"- {name}: {CATEGORY_HINTS[name]}" for name in _ANSWERS)
+    + "\n\nRules:\n"
+    "- Money moving between the user's own ING accounts (transfer, TFR, Everyday, Savings "
+    "Maximiser, Term Deposit) is Transfers.\n"
+    "- Money coming in is usually Salary & Income, Interest or Transfers; a refund goes in "
+    "the category of whatever was refunded."
 )
+
+
+def build_messages(
+    merchant: str, direction: Direction | None, examples: list[tuple[str, str]]
+) -> list[dict[str, str]]:
+    system = _INSTRUCTIONS
+    if examples:
+        system += (
+            "\n\nThis user's own past answers for similar merchants. Follow them: the same "
+            "merchant, or the same chain in another suburb, gets the same category.\n"
+            + "\n".join(f"- {key} -> {category}" for key, category in examples)
+        )
+    user = f"Merchant: {merchant}"
+    if direction is not None:
+        user += f"\nMoney: {'went out' if direction == 'out' else 'came in'}"
+    return [{"role": "system", "content": system}, {"role": "user", "content": user}]
+
+
+_examples_index: tuple[dict[str, str], list[str], TfidfVectorizer, object] | None = None
+
+
+def similar_examples(merchant: str, memory: dict[str, str], k: int = FEW_SHOT_EXAMPLES) -> list[tuple[str, str]]:
+    """The k confirmed merchants whose names look most like this one, by
+    character n-grams - so "WOOLWORTHS METRO PYRMONT" pulls in "WOOLWORTHS
+    SYDNEY", and a merchant's own past answers outrank unrelated ones."""
+    global _examples_index
+    if not memory or k <= 0:
+        return []
+    # Rebuilt only when store.known_merchants() hands back a new dict, i.e.
+    # after new answers were saved.
+    if _examples_index is None or _examples_index[0] is not memory:
+        keys = list(memory)
+        vectorizer = TfidfVectorizer(analyzer="char_wb", ngram_range=(3, 5))
+        _examples_index = (memory, keys, vectorizer, vectorizer.fit_transform(keys))
+    _, keys, vectorizer, matrix = _examples_index
+    scores = linear_kernel(vectorizer.transform([merchant]), matrix)[0]
+    nearest = scores.argsort()[::-1][:k]
+    # Most similar last, right before the question, where a small model
+    # weighs it most.
+    return [(keys[i], memory[keys[i]]) for i in reversed(nearest) if keys[i] != merchant]
 
 
 @dataclass(frozen=True)
@@ -86,18 +138,20 @@ class Classification:
     source: Literal["memory", "classifier", "ollama"]
 
 
-async def classify(client: httpx.AsyncClient, description: str) -> str:
-    """Classifies a single description. No date, amount, or account info is sent -
-    this is the only thing that leaves the machine, ever, for any transaction."""
+async def classify(
+    client: httpx.AsyncClient,
+    merchant: str,
+    direction: Direction | None = None,
+    examples: list[tuple[str, str]] | None = None,
+) -> str:
+    """Classifies one merchant. See "Minimal payload" above for exactly what
+    is sent."""
     try:
         resp = await client.post(
             f"{OLLAMA_URL}/api/chat",
             json={
                 "model": OLLAMA_MODEL,
-                "messages": [
-                    {"role": "system", "content": _SYSTEM_PROMPT},
-                    {"role": "user", "content": f"Description: {description}"},
-                ],
+                "messages": build_messages(merchant, direction, examples or []),
                 "format": _RESPONSE_SCHEMA,
                 "stream": False,
                 "options": {"temperature": 0},
@@ -107,10 +161,10 @@ async def classify(client: httpx.AsyncClient, description: str) -> str:
         resp.raise_for_status()
         content = resp.json()["message"]["content"]
         category = json.loads(content).get("category", "Uncategorized")
-        if category not in CATEGORIES:
+        if category not in _ANSWERS:
             logger.warning(
                 "Ollama returned a category outside the fixed list for %r: %r",
-                description,
+                merchant,
                 category,
             )
             return "Uncategorized"
@@ -120,7 +174,7 @@ async def classify(client: httpx.AsyncClient, description: str) -> str:
             "Couldn't connect to Ollama at %s while classifying %r: %s. "
             "Check OLLAMA_URL is correct and reachable from this cluster.",
             OLLAMA_URL,
-            description,
+            merchant,
             exc,
         )
         return "Uncategorized"
@@ -128,23 +182,23 @@ async def classify(client: httpx.AsyncClient, description: str) -> str:
         logger.error(
             "Ollama returned HTTP %s while classifying %r: %s",
             exc.response.status_code,
-            description,
+            merchant,
             exc.response.text[:500],
         )
         return "Uncategorized"
     except httpx.HTTPError as exc:
-        logger.error("Request to Ollama failed while classifying %r: %s", description, exc)
+        logger.error("Request to Ollama failed while classifying %r: %s", merchant, exc)
         return "Uncategorized"
     except (KeyError, ValueError) as exc:
         logger.error(
-            "Couldn't parse Ollama's response while classifying %r: %s", description, exc
+            "Couldn't parse Ollama's response while classifying %r: %s", merchant, exc
         )
         return "Uncategorized"
 
 
-async def classify_merchants(merchants: dict[str, str]) -> dict[str, Classification]:
-    """Classifies each merchant key, given one representative description per
-    key: memory first, then the local classifier, then Ollama (concurrent,
+async def classify_merchants(merchants: dict[str, Direction | None]) -> dict[str, Classification]:
+    """Classifies each merchant key (with whether its money went out or came
+    in): memory first, then the local classifier, then Ollama (concurrent,
     capped at OLLAMA_CONCURRENCY) for whatever's left."""
     memory = store.known_merchants()
     results: dict[str, Classification] = {}
@@ -162,14 +216,12 @@ async def classify_merchants(merchants: dict[str, str]) -> dict[str, Classificat
     if needs_ollama:
         limit = asyncio.Semaphore(OLLAMA_CONCURRENCY)
 
-        async def bounded(client: httpx.AsyncClient, description: str) -> str:
+        async def bounded(client: httpx.AsyncClient, key: str) -> str:
             async with limit:
-                return await classify(client, description)
+                return await classify(client, key, merchants[key], similar_examples(key, memory))
 
         async with httpx.AsyncClient() as client:
-            categories = await asyncio.gather(
-                *(bounded(client, merchants[key]) for key in needs_ollama)
-            )
+            categories = await asyncio.gather(*(bounded(client, key) for key in needs_ollama))
         for key, category in zip(needs_ollama, categories):
             results[key] = Classification(category, None, "ollama")
 
