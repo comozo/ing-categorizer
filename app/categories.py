@@ -33,7 +33,7 @@ CATEGORY_GROUPS = [
     {
         "name": "Transport",
         "color": "#3ea6ff",
-        "items": [{"name": "Transport", "icon": "🚗", "hint": "fuel, public transport, rideshare, tolls, parking, car registration and servicing (Opal, Myki, Uber trips, Linkt, Ampol, BP, Shell)"}],
+        "items": [{"name": "Transport", "icon": "🚗", "hint": "fuel, public transport, rideshare, tolls, parking, car registration and servicing (Opal and TfNSW fares, Myki, Uber trips, Linkt, Service NSW rego, Ampol, BP, Shell)"}],
     },
     {
         "name": "Lifestyle",

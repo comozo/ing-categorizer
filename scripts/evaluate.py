@@ -60,9 +60,11 @@ _BASELINE_SCHEMA = {
 }
 
 
-def load_cases(pairs_path: Path, sessions_dir: Path | None):
+def load_cases(pairs_path: Path, sessions_dir: Path | None, overridden_only: bool = False):
     """One case per merchant key: (key, a sample raw description, your
-    category, direction or None)."""
+    category, direction or None). overridden_only keeps just the merchants
+    where a session shows you picked something other than the AI's
+    suggestion - answers that are certainly yours, not an accepted guess."""
     store.TRAINING_DATA_PATH = pairs_path
     labels: dict[str, Counter] = defaultdict(Counter)
     samples: dict[str, str] = {}
@@ -72,9 +74,16 @@ def load_cases(pairs_path: Path, sessions_dir: Path | None):
         samples.setdefault(key, description)
 
     totals: dict[str, float] = defaultdict(float)
+    overridden: set[str] = set()
     if sessions_dir and sessions_dir.exists():
         for path in sessions_dir.glob("*.json"):
-            for t in json.loads(path.read_text())["transactions"]:
+            session = json.loads(path.read_text())
+            overridden |= {
+                m["key"]
+                for m in session["merchants"]
+                if m["category"] is not None and m["category"] != m["suggested"]
+            }
+            for t in session["transactions"]:
                 try:
                     totals[t["merchant"]] += float(t["amount"])
                 except ValueError:
@@ -83,7 +92,7 @@ def load_cases(pairs_path: Path, sessions_dir: Path | None):
     cases = []
     for key, counts in labels.items():
         category = counts.most_common(1)[0][0]
-        if category == "Uncategorized":
+        if category == "Uncategorized" or (overridden_only and key not in overridden):
             continue
         direction = ("in" if totals[key] >= 0 else "out") if key in totals else None
         cases.append((key, samples[key], category, direction))
@@ -106,8 +115,7 @@ async def ask(client, model, messages, schema):
     return json.loads(resp.json()["message"]["content"]).get("category", "Uncategorized")
 
 
-async def run_llm(cases, model, variant, concurrency):
-    memory = {key: category for key, _, category, _ in cases}
+async def run_llm(cases, model, variant, concurrency, memory):
     limit = asyncio.Semaphore(concurrency)
 
     async def one(case):
@@ -174,10 +182,18 @@ def main():
     parser.add_argument("--sessions", type=Path)
     parser.add_argument("--models", nargs="+", default=[classifier.OLLAMA_MODEL])
     parser.add_argument("--concurrency", type=int, default=4)
+    parser.add_argument(
+        "--overridden-only",
+        action="store_true",
+        help="score only merchants where you changed the AI's pick (needs --sessions)",
+    )
     parser.add_argument("--show-errors", type=int, default=15)
     args = parser.parse_args()
 
-    cases = load_cases(args.pairs, args.sessions)
+    cases = load_cases(args.pairs, args.sessions, args.overridden_only)
+    # Few-shot examples come from every merchant you've confirmed, even when
+    # only a subset is being scored - that's what the app itself would see.
+    memory = {key: category for key, _, category, _ in load_cases(args.pairs, args.sessions)}
     with_direction = sum(1 for c in cases if c[3] is not None)
     print(f"{len(cases)} merchants, {with_direction} with money direction\n")
     print("Category spread:", dict(Counter(c[2] for c in cases).most_common()), "\n")
@@ -191,7 +207,7 @@ def main():
         print(f"\nOllama {model}:")
         for variant in ("baseline", "hints+direction", "few-shot"):
             start = time.monotonic()
-            predictions = asyncio.run(run_llm(cases, model, variant, args.concurrency))
+            predictions = asyncio.run(run_llm(cases, model, variant, args.concurrency, memory))
             errors[(model, variant)] = report(f"  {variant}", cases, predictions, time.monotonic() - start)
 
     for (model, variant), wrong in errors.items():

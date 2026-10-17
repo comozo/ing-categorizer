@@ -28,6 +28,12 @@ _RAIL_SEGMENTS = {
     "ATM WITHDRAWAL",
 }
 
+# Card-terminal and online-checkout providers prefix the merchant's own name:
+# "SQ *BAY BREW CAFE" (Square), "LS Kuertosh" (Lightspeed), "SP CANDY SMASH"
+# (Shopify), "ZLR*" (Zeller), "PAYPAL *". They say how the shop takes cards,
+# not what it is, and would otherwise make every Square cafe look alike.
+_PROVIDER_PREFIX = re.compile(r"^(SQ|LS|SP|ZLR|PAYPAL|PP|TST)\s*\*?\s+|^(SQ|ZLR|PAYPAL|PP|TST)\s*\*")
+
 # Everything from one of these words onward is per-transaction noise.
 _TAIL = re.compile(r"\b(RECEIPT|DATE|CARD|REF|REFERENCE)\b.*$")
 _NON_LETTERS = re.compile(r"[^A-Z& ]+")
@@ -40,7 +46,7 @@ def merchant_key(description: str) -> str:
         (s for s in segments if s not in _RAIL_SEGMENTS and not _TAIL.match(s)),
         text,
     )
-    merchant = _TAIL.sub("", merchant)
+    merchant = _PROVIDER_PREFIX.sub("", _TAIL.sub("", merchant))
     words = _NON_LETTERS.sub(" ", merchant).split()
     # "AMZNPRIMEA* AMZNPRIMEA" -> "AMZNPRIMEA": drop immediate repeats.
     deduped = [w for i, w in enumerate(words) if i == 0 or w != words[i - 1]]
