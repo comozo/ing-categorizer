@@ -18,7 +18,7 @@ CATEGORY_GROUPS = [
         "name": "Housing",
         "color": "#8b5cf6",
         "items": [
-            {"name": "Housing", "icon": "🏠", "hint": "rent, mortgage repayments, strata, council rates, home and contents insurance"},
+            {"name": "Housing", "icon": "🏠", "hint": "rent, mortgage repayments, strata, council rates"},
             {"name": "Utilities", "icon": "💡", "hint": "electricity, gas, water, internet, mobile and phone plans (AGL, Origin, EnergyAustralia, Telstra, Optus, Aussie Broadband)"},
         ],
     },
@@ -39,8 +39,9 @@ CATEGORY_GROUPS = [
         "name": "Lifestyle",
         "color": "#ec4899",
         "items": [
+            {"name": "Childcare", "icon": "🧸", "hint": "daycare, preschool, before and after school care, vacation care, nannies and babysitters (Goodstart, Guardian, Only About Children, Busy Bees)"},
             {"name": "Education", "icon": "📚", "hint": "courses, tuition, school fees, study materials (Udemy, Coursera, universities)"},
-            {"name": "Health", "icon": "💊", "hint": "doctors, dentists, pharmacies, health insurance, gyms (Chemist Warehouse, Priceline, Bupa, Medibank)"},
+            {"name": "Health", "icon": "💊", "hint": "doctors, dentists, pharmacies, gyms (Chemist Warehouse, Priceline)"},
             {"name": "Leisure", "icon": "🎮", "hint": "entertainment, events, cinemas, hobbies, sport, travel, flights and hotels (Ticketek, Event Cinemas, Qantas, Airbnb)"},
             {"name": "Personal Care", "icon": "✂️", "hint": "hairdressers, barbers, beauty, cosmetics (Mecca, Sephora)"},
         ],
@@ -50,6 +51,7 @@ CATEGORY_GROUPS = [
         "color": "#8a93a7",
         "items": [
             {"name": "Donations", "icon": "🎁", "hint": "charities and fundraising (Red Cross, GoFundMe)"},
+            {"name": "Insurance", "icon": "🛡️", "hint": "premiums of any kind: car and CTP, home and contents, health, life, income protection, pet, travel (AAMI, NRMA, Allianz, Budget Direct, Youi, Bupa, Medibank, HCF, nib)"},
             {"name": "Investments", "icon": "📈", "hint": "share trading, super contributions, crypto (CommSec, Stake, Pearler, Vanguard, Raiz, Spaceship)"},
             {"name": "Other", "icon": "❓", "hint": "anything that genuinely fits no other category"},
             {"name": "Shopping", "icon": "🛍️", "hint": "retail goods: clothing, electronics, homeware, hardware, online marketplaces (Amazon purchases, Kmart, Target, Big W, JB Hi-Fi, Bunnings, eBay)"},
