@@ -17,6 +17,8 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 5. **Every answer is checkpointed** to a review session on the data volume as you make it (`app/sessions.py`). Closing the tab, losing the connection or a pod restart loses nothing: the home page lists every review, and "Resume" reopens it at the first unanswered merchant with XP and streak intact. Sessions hold the parsed statement (dates and amounts included, needed to build the CSV) and are deleted after `SESSION_RETENTION_DAYS`, or immediately with "Discard".
 6. Download the CSV with a `Category` column appended, ready to import into whichever finance app you're using. Every confirmed merchant (except `Uncategorized`) is added to the training set and the classifier retrains — so each upload leaves fewer merchants to review on the next one. Training data is just (description, category) pairs.
 
+7. **Known merchants** (`/merchants`, linked from the home page) lists every remembered merchant — the ones filled in without asking. Change a category to rewrite every past answer for that merchant (and retrain), or forget it to be asked again next time. "Check with AI" asks Ollama about each one in the background, without showing it your past answers, and flags where it disagrees: the quick way to find AI picks that were accepted without a close look and have been repeating since.
+
 ## Configuration
 
 | Env var | Default | Purpose |

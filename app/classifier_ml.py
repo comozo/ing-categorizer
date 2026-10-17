@@ -46,6 +46,9 @@ def retrain() -> Pipeline | None:
     """
     pairs = load_pairs()
     if len(pairs) < MIN_TRAINING_EXAMPLES:
+        # Forgetting merchants can drop below the minimum: a model trained on
+        # the larger, older set must not outlive the data it came from.
+        MODEL_PATH.unlink(missing_ok=True)
         return None
 
     descriptions, categories = zip(*pairs)

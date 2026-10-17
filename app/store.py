@@ -45,6 +45,43 @@ def load_pairs() -> list[tuple[str, str]]:
         return [(row[0], row[1]) for row in reader if len(row) == 2]
 
 
+def relabel(updates: dict[str, str | None]) -> None:
+    """Rewrites every stored pair of each merchant key in updates to the new
+    category, or drops them all when the new category is None ("forget").
+
+    Corrections rewrite rather than append so a merchant only ever has one
+    category on disk: appending would fix memory (latest answer wins) but
+    leave the old, wrong rows training the classifier.
+    """
+    global _known_merchants
+    if not updates or not TRAINING_DATA_PATH.exists():
+        return
+    rows = []
+    for description, category in load_pairs():
+        key = merchant_key(description)
+        if key in updates:
+            if updates[key] is None:
+                continue
+            category = updates[key]
+        rows.append((description, category))
+    tmp = TRAINING_DATA_PATH.with_suffix(".csv.tmp")
+    with open(tmp, "w", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        writer.writerow(["description", "category"])
+        writer.writerows(rows)
+    os.replace(tmp, TRAINING_DATA_PATH)
+    _known_merchants = None
+
+
+def merchant_counts() -> dict[str, int]:
+    """Merchant key -> how many confirmed transactions it has."""
+    counts: dict[str, int] = {}
+    for description, _ in load_pairs():
+        key = merchant_key(description)
+        counts[key] = counts.get(key, 0) + 1
+    return counts
+
+
 def known_merchants() -> dict[str, str]:
     """Merchant key -> the category it was most recently confirmed as.
 

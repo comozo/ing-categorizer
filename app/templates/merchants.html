@@ -1,0 +1,134 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ing-categorizer &middot; known merchants</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <h1>Known merchants</h1>
+    <p class="lede">
+      These {{ rows|length }} merchants are filled in automatically on every upload, without asking.
+      A wrong one here stays wrong until you fix it. Changing a category rewrites every past answer
+      for that merchant; forgetting one means you'll be asked about it again next time.
+    </p>
+
+    {% if saved is not none %}
+      <div class="notice" role="status">{% if saved %}Saved {{ saved }} change{{ "s" if saved != 1 else "" }}. The classifier has been retrained.{% else %}Nothing changed.{% endif %}</div>
+    {% endif %}
+
+    <section class="card recheck">
+      {% if check_running %}
+        <p class="recheck-status" id="recheck-status" data-running="true">
+          Checking with {{ check.model }}&hellip; <span id="recheck-progress">{{ check.done }}/{{ check.total }}</span>
+        </p>
+      {% else %}
+        <p class="recheck-status">
+          {% if check and check.finished_at %}
+            {{ check.model }} checked these on {{ check.finished_at[:10] }}:
+            <strong>{{ flagged_count }}</strong> look{{ "s" if flagged_count == 1 else "" }} wrong to it.
+          {% elif check %}
+            The last check was interrupted after {{ check.done }}/{{ check.total }}.
+          {% else %}
+            Not sure which answers are wrong? The AI can go through them and flag the ones it disagrees with.
+          {% endif %}
+        </p>
+        <form action="/merchants/recheck" method="post">
+          <button type="submit" class="secondary-btn">{{ "Check again" if check else "Check with AI" }}</button>
+        </form>
+      {% endif %}
+    </section>
+
+    {% if rows %}
+    <form action="/merchants" method="post" id="merchants-form">
+      {% if flagged_count %}
+      <label class="filter-toggle">
+        <input type="checkbox" id="flagged-only" checked> Show only the {{ flagged_count }} flagged
+      </label>
+      {% endif %}
+      <ul class="merchant-list">
+        {% for r in rows %}
+        <li class="merchant-row{% if r.suggestion %} flagged{% endif %}">
+          <input type="hidden" name="key_{{ loop.index0 }}" value="{{ r.key }}">
+          <div class="merchant-info">
+            <span class="merchant-name">{{ r.key }}</span>
+            <span class="merchant-meta">
+              {{ r.count }} transaction{{ "s" if r.count != 1 else "" }}
+              {% if r.suggestion %}
+                &middot; <span class="ai-says">AI says <strong>{{ r.suggestion }}</strong></span>
+                <button type="button" class="use-ai" data-use="{{ r.suggestion }}">Use it</button>
+              {% endif %}
+            </span>
+          </div>
+          <select name="category_{{ loop.index0 }}" data-original="{{ r.category }}" aria-label="Category for {{ r.key }}">
+            {% for cat in categories %}
+              <option value="{{ cat }}" {% if cat == r.category %}selected{% endif %}>{{ cat }}</option>
+            {% endfor %}
+            <option value="{{ forget }}">Forget this merchant</option>
+          </select>
+        </li>
+        {% endfor %}
+      </ul>
+      <div class="save-bar">
+        <span id="change-count">No changes</span>
+        <button type="submit">Save changes</button>
+      </div>
+    </form>
+    {% else %}
+      <p class="lede">Nothing remembered yet. Merchants appear here once you've downloaded a reviewed export.</p>
+    {% endif %}
+
+    <footer><a href="/">&larr; Home</a></footer>
+  </div>
+
+  <script>
+  (function () {
+    "use strict";
+    const form = document.getElementById("merchants-form");
+    if (form) {
+      const counter = document.getElementById("change-count");
+      const selects = Array.from(form.querySelectorAll("select[data-original]"));
+      const refresh = () => {
+        let changed = 0;
+        selects.forEach((s) => {
+          const isChanged = s.value !== s.dataset.original;
+          s.closest(".merchant-row").classList.toggle("changed", isChanged);
+          if (isChanged) changed += 1;
+        });
+        counter.textContent = changed ? `${changed} unsaved change${changed === 1 ? "" : "s"}` : "No changes";
+      };
+      form.addEventListener("change", refresh);
+      form.addEventListener("click", (e) => {
+        const btn = e.target.closest("[data-use]");
+        if (!btn) return;
+        btn.closest(".merchant-row").querySelector("select").value = btn.dataset.use;
+        refresh();
+      });
+      const toggle = document.getElementById("flagged-only");
+      if (toggle) {
+        const apply = () => form.classList.toggle("flagged-only", toggle.checked);
+        toggle.addEventListener("change", apply);
+        apply();
+      }
+    }
+
+    const status = document.getElementById("recheck-status");
+    if (status && status.dataset.running === "true") {
+      const progress = document.getElementById("recheck-progress");
+      const poll = () =>
+        fetch("/merchants/recheck/status")
+          .then((r) => r.json())
+          .then((s) => {
+            progress.textContent = `${s.done}/${s.total}`;
+            if (s.running) setTimeout(poll, 2000);
+            else location.reload();
+          })
+          .catch(() => setTimeout(poll, 5000));
+      setTimeout(poll, 2000);
+    }
+  })();
+  </script>
+</body>
+</html>

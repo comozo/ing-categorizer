@@ -40,6 +40,14 @@
     </section>
     {% endif %}
 
+    {% if known_count %}
+    <a class="card known-link" href="/merchants">
+      <span><strong>Known merchants ({{ known_count }})</strong><br>
+      <span class="session-meta">Filled in automatically on every upload. Check and fix them here.</span></span>
+      <span aria-hidden="true">&rarr;</span>
+    </a>
+    {% endif %}
+
     <form class="card" action="/upload" method="post" enctype="multipart/form-data">
       <div class="dropzone">
         Choose your exported OFX/QFX file

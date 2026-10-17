@@ -10,6 +10,10 @@ Two kinds of state are persisted, both on DATA_DIR:
   trained on them - see app/store.py and app/classifier_ml.py;
 - review sessions, the checkpoint that makes a half-finished review
   resumable - see app/sessions.py.
+
+The Known merchants page (/merchants) is where remembered answers get
+corrected or forgotten, with an optional AI recheck that flags the ones
+worth a second look - see app/recheck.py.
 """
 
 from __future__ import annotations
@@ -23,7 +27,7 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import classifier_ml, sessions, store
+from app import classifier_ml, recheck, sessions, store
 from app.categories import CATEGORIES, CATEGORY_GROUPS
 from app.classifier import classify_merchants
 from app.merchant import merchant_key
@@ -49,9 +53,19 @@ def _index(request: Request, error: str | None = None, status_code: int = 200) -
     return templates.TemplateResponse(
         request,
         "index.html",
-        {"error": error, "sessions": sessions.summaries(), "retention_days": sessions.RETENTION_DAYS},
+        {
+            "error": error,
+            "sessions": sessions.summaries(),
+            "retention_days": sessions.RETENTION_DAYS,
+            "known_count": len(store.known_merchants()),
+        },
         status_code=status_code,
     )
+
+
+def _retrain() -> None:
+    classifier_ml.retrain()
+    classifier_ml.invalidate_cache()
 
 
 def _total(amounts: list[str]) -> str:
@@ -232,11 +246,16 @@ async def download(session_id: str, request: Request):
         if m["category"] != "Uncategorized" and trained.get(m["key"]) != m["category"]
     }
     if changed:
-        store.append_pairs(
-            [(t["description"], changed[t["merchant"]]) for t in session["transactions"] if t["merchant"] in changed]
-        )
-        classifier_ml.retrain()
-        classifier_ml.invalidate_cache()
+        new_pairs = [
+            (t["description"], changed[t["merchant"]]) for t in session["transactions"] if t["merchant"] in changed
+        ]
+        store.append_pairs(new_pairs)
+        # Bring older rows of the same merchants in line too, so correcting a
+        # remembered merchant here fixes it everywhere (see store.relabel).
+        # Keys are recomputed: a session saved before a merchant_key() change
+        # holds the old ones.
+        store.relabel({merchant_key(d): c for d, c in new_pairs})
+        _retrain()
         sessions.update(session_id, lambda s: s["trained"].update(changed))
 
     stem = re.sub(r"[^\w.-]", "_", session["filename"].rsplit(".", 1)[0])
@@ -251,6 +270,71 @@ async def download(session_id: str, request: Request):
 def discard(session_id: str):
     sessions.delete(session_id)
     return RedirectResponse("/", status_code=303)
+
+
+_FORGET = "__forget__"
+
+
+@app.get("/merchants", response_class=HTMLResponse)
+def merchants_page(request: Request, saved: int | None = None):
+    memory = store.known_merchants()
+    counts = store.merchant_counts()
+    check = recheck.load()
+    suggestions = check["suggestions"] if check else {}
+    rows = []
+    for key, category in memory.items():
+        suggestion = suggestions.get(key)
+        flagged = suggestion not in (None, category, "Uncategorized")
+        rows.append({"key": key, "category": category, "count": counts.get(key, 0), "suggestion": suggestion if flagged else None})
+    rows.sort(key=lambda r: (r["suggestion"] is None, -r["count"], r["key"]))
+    return templates.TemplateResponse(
+        request,
+        "merchants.html",
+        {
+            "rows": rows,
+            "flagged_count": sum(1 for r in rows if r["suggestion"]),
+            "categories": [c for c in CATEGORIES if c != "Uncategorized"],
+            "forget": _FORGET,
+            "check": check,
+            "check_running": recheck.running(),
+            "saved": saved,
+        },
+    )
+
+
+@app.post("/merchants")
+async def save_merchants(request: Request):
+    form = await request.form()
+    memory = store.known_merchants()
+    updates: dict[str, str | None] = {}
+    for name in form:
+        if not name.startswith("category_"):
+            continue
+        key = form.get("key_" + name.removeprefix("category_"))
+        value = form.get(name)
+        if key not in memory:
+            continue
+        if value == _FORGET:
+            updates[key] = None
+        elif value in CATEGORIES and value != "Uncategorized" and value != memory[key]:
+            updates[key] = value
+    if updates:
+        store.relabel(updates)
+        _retrain()
+        logger.info("Known merchants: %d corrected, %d forgotten", sum(v is not None for v in updates.values()), sum(v is None for v in updates.values()))
+    return RedirectResponse(f"/merchants?saved={len(updates)}", status_code=303)
+
+
+@app.post("/merchants/recheck")
+async def start_recheck():
+    recheck.start()
+    return RedirectResponse("/merchants", status_code=303)
+
+
+@app.get("/merchants/recheck/status")
+def recheck_status():
+    check = recheck.load() or {}
+    return {"running": recheck.running(), "done": check.get("done", 0), "total": check.get("total", 0)}
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
