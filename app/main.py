@@ -27,9 +27,8 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import classifier_ml, recheck, sessions, store
+from app import classifier_ml, jobs, recheck, sessions, store
 from app.categories import CATEGORIES, CATEGORY_GROUPS
-from app.classifier import classify_merchants
 from app.merchant import merchant_key
 from app.ofx_io import OfxFormatError, Transaction, parse_ofx, write_categorized_csv
 
@@ -41,13 +40,6 @@ logger = logging.getLogger(__name__)
 app = FastAPI(title="ing-categorizer")
 app.mount("/static", StaticFiles(directory="app/static"), name="static")
 templates = Jinja2Templates(directory="app/templates")
-
-# Review order: what the classifier is confident about first (quick confirms
-# that build a streak), then what only Ollama could answer (worth a closer
-# look). Within each, the merchants with the most transactions come first, so
-# the early answers cover the most rows.
-_SOURCE_ORDER = {"classifier": 0, "ollama": 1}
-
 
 def _index(request: Request, error: str | None = None, status_code: int = 200) -> HTMLResponse:
     return templates.TemplateResponse(
@@ -95,49 +87,31 @@ async def upload(request: Request, file: UploadFile = File(...)):
     by_merchant: dict[str, list[Transaction]] = {}
     for txn in transactions:
         by_merchant.setdefault(merchant_key(txn.description), []).append(txn)
-
-    # A merchant's direction is the sign of its net total: a shop with one
-    # refund among ten purchases is still somewhere money goes out to.
-    classifications = await classify_merchants(
-        {
-            key: ("in" if not _total([t.amount for t in txns]).startswith("-") else "out")
-            for key, txns in by_merchant.items()
-        }
-    )
-    counts = {source: 0 for source in ("memory", "classifier", "ollama")}
-    for c in classifications.values():
-        counts[c.source] += 1
-    logger.info(
-        "Parsed %d transactions into %d merchants: %d remembered, %d from the local "
-        "classifier, %d needed Ollama",
-        len(transactions),
-        len(by_merchant),
-        counts["memory"],
-        counts["classifier"],
-        counts["ollama"],
-    )
+    logger.info("Parsed %d transactions into %d merchants", len(transactions), len(by_merchant))
 
     merchants = []
     for key, txns in by_merchant.items():
-        c = classifications[key]
         dates = sorted(t.date for t in txns if t.date)
+        total = _total([t.amount for t in txns])
         merchants.append(
             {
                 "key": key,
                 "sample": txns[0].description,
                 "count": len(txns),
-                "total": _total([t.amount for t in txns]),
+                "total": total,
                 "first_date": dates[0] if dates else "",
                 "last_date": dates[-1] if dates else "",
-                "suggested": c.category,
-                "source": c.source,
-                "confidence": round(c.confidence * 100) if c.confidence is not None else None,
-                # Remembered merchants count as already answered: that's the
-                # whole point of remembering them. Everything else waits for you.
-                "category": c.category if c.source == "memory" else None,
+                # A merchant's direction is the sign of its net total: a shop
+                # with one refund among ten purchases is still somewhere money
+                # goes out to.
+                "direction": "out" if total.startswith("-") else "in",
+                # Filled in by the background job (app/jobs.py) as answers arrive.
+                "suggested": None,
+                "source": None,
+                "confidence": None,
+                "category": None,
             }
         )
-    merchants.sort(key=lambda m: (_SOURCE_ORDER.get(m["source"], -1), -m["count"]))
 
     session = sessions.create(
         filename=file.filename or "export.ofx",
@@ -153,17 +127,28 @@ async def upload(request: Request, file: UploadFile = File(...)):
             for t in transactions
         ],
         merchants=merchants,
+        status="categorizing",
     )
-    # Redirect rather than render: the review page now has its own URL, so a
-    # refresh or a reopened tab resumes the session instead of re-uploading.
+    # Saved before any categorizing starts, and categorized in the background:
+    # the review URL shows live progress, and a refresh, a closed tab or a
+    # restart never loses the upload.
+    jobs.start(session["id"])
     return RedirectResponse(f"/review/{session['id']}", status_code=303)
 
 
 @app.get("/review/{session_id}", response_class=HTMLResponse)
-def review(request: Request, session_id: str):
+async def review(request: Request, session_id: str):
     session = sessions.load(session_id)
     if session is None:
         return _index(request, error="That review no longer exists. Upload the export again.", status_code=404)
+
+    if session.get("status") == "categorizing":
+        jobs.resume_if_stalled(session)
+        return templates.TemplateResponse(
+            request,
+            "categorizing.html",
+            {"session": session, "progress": jobs.progress(session_id)},
+        )
 
     indexed = list(enumerate(session["merchants"]))
     deck = [(i, m) for i, m in indexed if m["source"] != "memory"]
@@ -182,6 +167,14 @@ def review(request: Request, session_id: str):
             "transaction_count": len(session["transactions"]),
         },
     )
+
+
+@app.get("/review/{session_id}/progress")
+def review_progress(session_id: str):
+    progress = jobs.progress(session_id)
+    if progress is None:
+        return JSONResponse({"error": "session not found"}, status_code=404)
+    return progress
 
 
 @app.post("/review/{session_id}/answers")
@@ -211,6 +204,9 @@ async def save_answers(session_id: str, request: Request):
 @app.post("/review/{session_id}/download")
 async def download(session_id: str, request: Request):
     form = await request.form()
+    current = sessions.load(session_id)
+    if current is not None and current.get("status") == "categorizing":
+        return RedirectResponse(f"/review/{session_id}", status_code=303)
 
     def finish(session):
         # The form carries every merchant's <select>: with JS these already

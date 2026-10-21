@@ -25,7 +25,7 @@
             <span class="session-name">{{ s.filename }}</span>
             <span class="session-meta">
               {{ s.created_at[:10] }} &middot; {{ s.transaction_count }} transactions &middot;
-              {% if s.completed %}downloaded{% elif s.answered == s.deck_size %}ready to download{% else %}{{ s.answered }}/{{ s.deck_size }} merchants checked{% endif %}
+              {% if s.categorizing %}categorizing&hellip;{% elif s.completed %}downloaded{% elif s.answered == s.deck_size %}ready to download{% else %}{{ s.answered }}/{{ s.deck_size }} merchants checked{% endif %}
             </span>
           </div>
           <div class="session-actions">

@@ -1,0 +1,135 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ing-categorizer &middot; categorizing</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <noscript><meta http-equiv="refresh" content="5"></noscript>
+</head>
+<body>
+  <div class="shell">
+    <h1>Categorizing {{ session.filename }}</h1>
+    <p class="lede">
+      {{ progress.transactions }} transactions from {{ progress.total }} merchants. Merchants you've confirmed before are
+      filled in instantly; the rest go to {{ progress.model }}, a few at a time. You can leave this page: it carries on,
+      and the review will be waiting on the home page.
+    </p>
+
+    <section class="card job" id="job" data-session="{{ session.id }}">
+      <div class="job-head">
+        <span class="job-count"><span id="done">{{ progress.done }}</span> of {{ progress.total }} merchants</span>
+        <span class="job-percent" id="percent">{{ (progress.done * 100 // progress.total) if progress.total else 0 }}%</span>
+      </div>
+      <div class="progress-track job-track"><div class="progress-fill" id="bar" style="width: {{ (progress.done * 100 / progress.total) if progress.total else 0 }}%"></div></div>
+
+      <div class="job-stats">
+        <span class="hud-item"><span class="hud-icon">&#9201;</span> <span id="elapsed">0:00</span> elapsed</span>
+        <span class="hud-item" id="eta-pill" hidden><span class="hud-icon">&#9203;</span> about <span id="eta">&ndash;</span> left</span>
+        <span class="hud-item"><span class="hud-icon">&#129504;</span> <span id="count-memory">0</span> remembered</span>
+        <span class="hud-item"><span class="hud-icon">&#9889;</span> <span id="count-classifier">0</span> local model</span>
+        <span class="hud-item"><span class="hud-icon">&#129433;</span> <span id="count-ollama">0</span> from {{ progress.model }}</span>
+      </div>
+
+      <div class="job-error" id="error" role="alert" hidden></div>
+
+      <div class="job-panels">
+        <div class="job-panel">
+          <h2>Asking {{ progress.model }} now</h2>
+          <ul class="job-list" id="in-flight"><li class="job-empty">Starting&hellip;</li></ul>
+        </div>
+        <div class="job-panel">
+          <h2>Just answered</h2>
+          <ul class="job-list" id="recent"><li class="job-empty">Nothing yet</li></ul>
+        </div>
+      </div>
+    </section>
+
+    <footer><a href="/">&larr; All reviews</a></footer>
+  </div>
+
+  <script>
+  (function () {
+    "use strict";
+    const job = document.getElementById("job");
+    const id = job.dataset.session;
+    const $ = (x) => document.getElementById(x);
+    const SOURCE_ICON = { memory: "\u{1F9E0}", classifier: "⚡", ollama: "\u{1F999}" };
+
+    function clock(seconds) {
+      if (seconds == null) return "–";
+      const s = Math.max(0, Math.round(seconds));
+      const h = Math.floor(s / 3600);
+      const m = Math.floor((s % 3600) / 60);
+      const r = String(s % 60).padStart(2, "0");
+      return h ? `${h}:${String(m).padStart(2, "0")}:${r}` : `${m}:${r}`;
+    }
+
+    function esc(str) {
+      return String(str).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+    }
+
+    function render(p) {
+      $("done").textContent = p.done;
+      const pct = p.total ? (p.done / p.total) * 100 : 100;
+      $("bar").style.width = pct + "%";
+      $("percent").textContent = Math.floor(pct) + "%";
+      $("elapsed").textContent = clock(p.elapsed);
+      $("eta-pill").hidden = p.eta == null;
+      $("eta").textContent = clock(p.eta);
+      ["memory", "classifier", "ollama"].forEach((k) => ($("count-" + k).textContent = (p.counts && p.counts[k]) || 0));
+
+      const error = $("error");
+      error.hidden = !p.error;
+      if (p.error) {
+        error.textContent = p.error_count
+          ? `${p.error} ${p.error_count} merchant${p.error_count === 1 ? "" : "s"} couldn't be categorized so far; they'll be on the deck as Uncategorized.`
+          : p.error;
+      }
+
+      $("in-flight").innerHTML = p.in_flight.length
+        ? p.in_flight
+            .map((f) => `<li><span class="job-merchant">${esc(f.merchant)}</span><span class="job-time">${f.seconds.toFixed(1)}s</span></li>`)
+            .join("")
+        : `<li class="job-empty">${p.done >= p.total ? "All done" : p.running ? "Waiting for the next one…" : "Paused. Reopen this page to continue."}</li>`;
+
+      $("recent").innerHTML = p.recent.length
+        ? p.recent
+            .map(
+              (r) =>
+                `<li class="${r.error ? "job-failed" : ""}"><span class="job-merchant">${esc(r.merchant)}</span>` +
+                `<span class="job-answer">${SOURCE_ICON[r.source] || ""} ${esc(r.category)}</span>` +
+                `<span class="job-time">${r.source === "ollama" ? r.seconds.toFixed(1) + "s" : "instant"}</span></li>`
+            )
+            .join("")
+        : '<li class="job-empty">Nothing yet</li>';
+    }
+
+    function poll() {
+      fetch(`/review/${id}/progress`)
+        .then((r) => {
+          if (!r.ok) throw new Error("HTTP " + r.status);
+          return r.json();
+        })
+        .then((p) => {
+          render(p);
+          if (p.status === "ready") {
+            // Let the full bar register before the deck replaces it.
+            setTimeout(() => location.reload(), 600);
+          } else {
+            setTimeout(poll, 1000);
+          }
+        })
+        .catch(() => {
+          $("error").hidden = false;
+          $("error").textContent = "Lost contact with the server. Retrying… Categorizing carries on regardless.";
+          setTimeout(poll, 3000);
+        });
+    }
+
+    render({{ progress | tojson }});
+    poll();
+  })();
+  </script>
+</body>
+</html>

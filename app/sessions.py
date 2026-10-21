@@ -58,9 +58,14 @@ def _write(session: dict[str, Any]) -> None:
     os.replace(tmp, path)
 
 
-def create(filename: str, transactions: list[dict], merchants: list[dict]) -> dict[str, Any]:
+def create(
+    filename: str, transactions: list[dict], merchants: list[dict], status: str = "ready"
+) -> dict[str, Any]:
     session = {
         "id": secrets.token_hex(8),
+        # "categorizing" while app/jobs.py fills in suggestions, then "ready".
+        # Sessions saved before this field existed are ready.
+        "status": status,
         "filename": filename,
         "created_at": now(),
         "updated_at": now(),
@@ -122,6 +127,7 @@ def summaries() -> list[dict[str, Any]]:
                 "filename": session["filename"],
                 "created_at": session["created_at"],
                 "completed": session["completed_at"] is not None,
+                "categorizing": session.get("status") == "categorizing",
                 "answered": sum(1 for m in deck if m["category"] is not None),
                 "deck_size": len(deck),
                 "transaction_count": len(session["transactions"]),

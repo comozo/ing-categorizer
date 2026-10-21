@@ -14,6 +14,7 @@
 }
 
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 
 body {
   margin: 0;
@@ -124,6 +125,33 @@ button:active, input[type="submit"]:active { transform: scale(0.98); }
   text-decoration: none;
 }
 .known-link:hover { border-color: var(--accent); }
+
+/* ---------- categorizing progress ---------- */
+
+.job { display: flex; flex-direction: column; gap: 14px; }
+.job-head { display: flex; justify-content: space-between; align-items: baseline; gap: 12px; }
+.job-count { font-size: 20px; font-weight: 800; font-variant-numeric: tabular-nums; }
+.job-percent { color: var(--gold); font-weight: 800; font-variant-numeric: tabular-nums; }
+.progress-track.job-track { flex: none; height: 12px; }
+.job-stats { display: flex; flex-wrap: wrap; gap: 6px; }
+.job-error {
+  background: #3a1a12;
+  border: 1px solid #d97757;
+  color: #ffb494;
+  border-radius: 10px;
+  padding: 10px 12px;
+  font-size: 13.5px;
+}
+.job-panels { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 12px; }
+.job-panel { min-width: 0; background: var(--surface-raised); border: 1px solid var(--border); border-radius: 12px; padding: 12px; }
+.job-panel h2 { margin: 0 0 8px; font-size: 12px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); }
+.job-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; font-size: 13.5px; }
+.job-list li { display: flex; align-items: baseline; gap: 8px; min-width: 0; }
+.job-merchant { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 600; }
+.job-answer { flex: 0 0 auto; color: #b8adff; white-space: nowrap; }
+.job-time { flex: 0 0 auto; color: var(--ink-muted); font-variant-numeric: tabular-nums; min-width: 44px; text-align: right; }
+.job-failed .job-answer { color: #ffb494; }
+.job-empty { color: var(--ink-muted); }
 
 /* ---------- known merchants ---------- */
 

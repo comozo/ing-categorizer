@@ -45,6 +45,8 @@ import asyncio
 import json
 import logging
 import os
+import time
+from collections.abc import Callable
 from dataclasses import dataclass
 from typing import Literal
 
@@ -138,14 +140,19 @@ class Classification:
     source: Literal["memory", "classifier", "ollama"]
 
 
-async def classify(
+class OllamaError(Exception):
+    """Ollama couldn't give an answer: unreachable, an HTTP error, or a reply
+    that doesn't parse. The message is what the progress screen shows."""
+
+
+async def ask_ollama(
     client: httpx.AsyncClient,
     merchant: str,
     direction: Direction | None = None,
     examples: list[tuple[str, str]] | None = None,
 ) -> str:
-    """Classifies one merchant. See "Minimal payload" above for exactly what
-    is sent."""
+    """Classifies one merchant, raising OllamaError when there's no answer.
+    See "Minimal payload" above for exactly what is sent."""
     try:
         resp = await client.post(
             f"{OLLAMA_URL}/api/chat",
@@ -161,14 +168,6 @@ async def classify(
         resp.raise_for_status()
         content = resp.json()["message"]["content"]
         category = json.loads(content).get("category", "Uncategorized")
-        if category not in _ANSWERS:
-            logger.warning(
-                "Ollama returned a category outside the fixed list for %r: %r",
-                merchant,
-                category,
-            )
-            return "Uncategorized"
-        return category
     except httpx.ConnectError as exc:
         logger.error(
             "Couldn't connect to Ollama at %s while classifying %r: %s. "
@@ -177,7 +176,7 @@ async def classify(
             merchant,
             exc,
         )
-        return "Uncategorized"
+        raise OllamaError(f"Can't reach Ollama at {OLLAMA_URL}. Is the machine running it awake?") from exc
     except httpx.HTTPStatusError as exc:
         logger.error(
             "Ollama returned HTTP %s while classifying %r: %s",
@@ -185,44 +184,86 @@ async def classify(
             merchant,
             exc.response.text[:500],
         )
-        return "Uncategorized"
+        raise OllamaError(f"Ollama answered HTTP {exc.response.status_code}. Is {OLLAMA_MODEL} pulled?") from exc
     except httpx.HTTPError as exc:
         logger.error("Request to Ollama failed while classifying %r: %s", merchant, exc)
-        return "Uncategorized"
+        raise OllamaError(f"The request to Ollama failed ({type(exc).__name__}).") from exc
     except (KeyError, ValueError) as exc:
         logger.error(
             "Couldn't parse Ollama's response while classifying %r: %s", merchant, exc
         )
+        raise OllamaError("Ollama's reply couldn't be read.") from exc
+    if category not in _ANSWERS:
+        logger.warning(
+            "Ollama returned a category outside the fixed list for %r: %r",
+            merchant,
+            category,
+        )
+        return "Uncategorized"
+    return category
+
+
+async def classify(
+    client: httpx.AsyncClient,
+    merchant: str,
+    direction: Direction | None = None,
+    examples: list[tuple[str, str]] | None = None,
+) -> str:
+    """ask_ollama(), with any failure answered as Uncategorized."""
+    try:
+        return await ask_ollama(client, merchant, direction, examples)
+    except OllamaError:
         return "Uncategorized"
 
 
-async def classify_merchants(merchants: dict[str, Direction | None]) -> dict[str, Classification]:
+async def classify_merchants(
+    merchants: dict[str, Direction | None],
+    on_start: Callable[[str], None] | None = None,
+    on_result: Callable[[str, Classification, float, str | None], None] | None = None,
+) -> dict[str, Classification]:
     """Classifies each merchant key (with whether its money went out or came
     in): memory first, then the local classifier, then Ollama (concurrent,
-    capped at OLLAMA_CONCURRENCY) for whatever's left."""
+    capped at OLLAMA_CONCURRENCY) for whatever's left.
+
+    on_start(key) fires when a merchant's Ollama request is sent; on_result
+    (key, classification, seconds, error) fires as each merchant gets its
+    answer, from any source, with the error message when Ollama failed and
+    the answer fell back to Uncategorized. The progress screen is built on
+    these two."""
     memory = store.known_merchants()
     results: dict[str, Classification] = {}
     needs_ollama: list[str] = []
 
+    def report(key: str, result: Classification, seconds: float = 0.0, error: str | None = None) -> None:
+        results[key] = result
+        if on_result is not None:
+            on_result(key, result, seconds, error)
+
     for key in merchants:
         if key in memory:
-            results[key] = Classification(memory[key], 1.0, "memory")
+            report(key, Classification(memory[key], 1.0, "memory"))
         elif (guess := classifier_ml.predict(key)) is not None:
             category, confidence = guess
-            results[key] = Classification(category, confidence, "classifier")
+            report(key, Classification(category, confidence, "classifier"))
         else:
             needs_ollama.append(key)
 
     if needs_ollama:
         limit = asyncio.Semaphore(OLLAMA_CONCURRENCY)
 
-        async def bounded(client: httpx.AsyncClient, key: str) -> str:
+        async def bounded(client: httpx.AsyncClient, key: str) -> None:
             async with limit:
-                return await classify(client, key, merchants[key], similar_examples(key, memory))
+                if on_start is not None:
+                    on_start(key)
+                started = time.monotonic()
+                error = None
+                try:
+                    category = await ask_ollama(client, key, merchants[key], similar_examples(key, memory))
+                except OllamaError as exc:
+                    category, error = "Uncategorized", str(exc)
+                report(key, Classification(category, None, "ollama"), time.monotonic() - started, error)
 
         async with httpx.AsyncClient() as client:
-            categories = await asyncio.gather(*(bounded(client, key) for key in needs_ollama))
-        for key, category in zip(needs_ollama, categories):
-            results[key] = Classification(category, None, "ollama")
+            await asyncio.gather(*(bounded(client, key) for key in needs_ollama))
 
     return results

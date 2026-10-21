@@ -16,6 +16,13 @@
       Every answer is saved as you go, so you can close this and pick up later.
     </p>
 
+    {% if session.categorize_error %}
+    <div class="error" role="alert">
+      {{ session.categorize_error.count }} merchant{{ "s" if session.categorize_error.count != 1 else "" }} couldn't be categorized:
+      {{ session.categorize_error.message }} They're on the deck as Uncategorized. Pick their categories yourself, or discard this review and upload again once Ollama is back.
+    </div>
+    {% endif %}
+
     <div class="game-header">
       <button type="button" class="back-btn" id="back-btn" aria-label="Previous merchant" disabled>&larr;</button>
       <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
