@@ -1,0 +1,145 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ing-categorizer &middot; check against a statement</title>
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body>
+  <div class="shell">
+    <h1>Check against a statement</h1>
+    <p class="lede">
+      Opening balance plus every transaction dated inside the statement period must equal the statement's closing balance.
+      This checks that with nothing else involved, and shows where the difference comes from when it doesn't.
+    </p>
+
+    {% if error %}<div class="error">{{ error }}</div>{% endif %}
+
+    <form class="card rec-form" action="/reconcile" method="post" enctype="multipart/form-data">
+      <fieldset>
+        <legend>What to check</legend>
+        <div class="rec-grid">
+          <label class="rec-field" for="csv_file">Categorizer CSV (what you imported)
+            <input type="file" id="csv_file" name="csv_file" accept=".csv">
+          </label>
+          <label class="rec-field" for="ofx_file">Original ING export (OFX)
+            <input type="file" id="ofx_file" name="ofx_file" accept=".ofx,.qfx">
+          </label>
+          {% if reviews %}
+          <label class="rec-field" for="session_id">Or one of your reviews
+            <select id="session_id" name="session_id">
+              <option value="">None</option>
+              {% for r in reviews %}
+              <option value="{{ r.id }}" {% if r.id == form.session_id %}selected{% endif %}>{{ r.filename }} &middot; {{ r.created_at[:10] }} &middot; {{ r.transaction_count }} transactions</option>
+              {% endfor %}
+            </select>
+          </label>
+          {% endif %}
+        </div>
+        <p class="rec-hint">Add the OFX together with the CSV (or a review) to also confirm the categorizer didn't drop or change a single transaction.</p>
+      </fieldset>
+
+      <fieldset>
+        <legend>From the statement</legend>
+        <div class="rec-grid">
+          <label class="rec-field" for="start">First day of the period
+            <input type="date" id="start" name="start" value="{{ form.start or '2025-07-01' }}" required>
+          </label>
+          <label class="rec-field" for="end">Last day of the period
+            <input type="date" id="end" name="end" value="{{ form.end or '2026-06-30' }}" required>
+          </label>
+          <label class="rec-field" for="opening">Opening balance
+            <input id="opening" name="opening" inputmode="decimal" value="{{ form.opening or '' }}" placeholder="4,210.55" required>
+          </label>
+          <label class="rec-field" for="closing">Closing balance
+            <input id="closing" name="closing" inputmode="decimal" value="{{ form.closing or '' }}" placeholder="6,873.10" required>
+          </label>
+          <label class="rec-field" for="total_credits">Total money in <span class="rec-optional">optional</span>
+            <input id="total_credits" name="total_credits" inputmode="decimal" value="{{ form.total_credits or '' }}">
+          </label>
+          <label class="rec-field" for="total_debits">Total money out <span class="rec-optional">optional</span>
+            <input id="total_debits" name="total_debits" inputmode="decimal" value="{{ form.total_debits or '' }}">
+          </label>
+        </div>
+        <p class="rec-hint">If the statement lists total credits and debits, add them: it tells you which side is off.</p>
+      </fieldset>
+
+      <button type="submit">Check</button>
+    </form>
+
+    {% if report %}
+    <section class="card rec-report">
+      <div class="rec-verdict {{ 'rec-ok' if report.matches else 'rec-off' }}">
+        {% if report.matches %}&#10003; Matches the statement{% else %}&#10007; Off by {{ report.difference.lstrip('-') }}{% endif %}
+      </div>
+      <p class="rec-source">Checked {{ source_label }}: {{ report.count }} transactions from {{ report.first_date }} to {{ report.last_date }}, {{ report.inside_count }} inside the period.</p>
+
+      <div class="table-scroll">
+        <table class="rec-table rec-sum">
+          <tr><td>Opening balance</td><td>{{ report.opening }}</td></tr>
+          <tr><td>+ Money in</td><td>{{ report.money_in }}</td></tr>
+          <tr><td>&minus; Money out</td><td>{{ report.money_out }}</td></tr>
+          <tr class="rec-strong"><td>= Closing, from the transactions</td><td>{{ report.computed }}</td></tr>
+          <tr><td>Closing, from the statement</td><td>{{ report.closing }}</td></tr>
+          <tr class="rec-strong"><td>Difference</td><td>{{ report.difference }}</td></tr>
+        </table>
+      </div>
+
+      <h2>What this tells you</h2>
+      <ul class="rec-findings">
+        {% for f in report.findings %}<li>{{ f }}</li>{% endfor %}
+      </ul>
+
+      {% if comparison %}
+      <h2>CSV against the original export</h2>
+      {% if comparison.identical %}
+        <p class="rec-good">&#10003; Identical: all {{ comparison.ofx_count }} transactions are in both, with the same dates and amounts. The categorizer didn't drop or change anything.</p>
+      {% else %}
+        <p class="rec-bad">The two differ. Export: {{ comparison.ofx_count }} transactions totalling {{ comparison.ofx_total }}. CSV: {{ comparison.csv_count }} totalling {{ comparison.csv_total }}.</p>
+        {% for title, rows in [("In the export but not the CSV", comparison.missing), ("In the CSV but not the export", comparison.extra)] %}
+          {% if rows %}
+          <h3>{{ title }} ({{ rows|length }})</h3>
+          {% with rows=rows %}{% include "_rec_rows.html" %}{% endwith %}
+          {% endif %}
+        {% endfor %}
+        {% if comparison.changed %}
+          <h3>Same transaction, different date or amount ({{ comparison.changed|length }})</h3>
+          <div class="table-scroll"><table class="rec-table">
+            <thead><tr><th>ID</th><th>Export</th><th>CSV</th></tr></thead>
+            {% for c in comparison.changed %}<tr><td>{{ c.fitid }}</td><td>{{ c.ofx.date }} &middot; {{ c.ofx.amount }}</td><td>{{ c.csv.date }} &middot; {{ c.csv.amount }}</td></tr>{% endfor %}
+          </table></div>
+        {% endif %}
+      {% endif %}
+      {% endif %}
+
+      {% for title, rows, note in [
+        ("Could explain the gap", report.suspects, "Exactly the gap (a duplicate?) or half of it (wrong sign?). Check each against the statement."),
+        ("Dated outside the statement period", report.outside, "Left out of the total above."),
+        ("Sharing a transaction ID", report.repeated_ids, "Almost certainly duplicates."),
+        ("Same date, amount and description", report.look_alikes, "Often genuine; confirm on the statement."),
+      ] %}
+        {% if rows %}
+        <h2>{{ title }} ({{ rows|length }})</h2>
+        <p class="rec-hint">{{ note }}</p>
+        {% include "_rec_rows.html" %}
+        {% endif %}
+      {% endfor %}
+
+      <h2>Month by month</h2>
+      <p class="rec-hint">Compare each month's closing balance with ING's monthly statement. The first month that disagrees holds the problem.</p>
+      <div class="table-scroll">
+        <table class="rec-table rec-months">
+          <thead><tr><th>Month</th><th>Transactions</th><th>Money in</th><th>Money out</th><th>Closing</th></tr></thead>
+          {% for m in report.months %}
+          <tr><td>{{ m.month }}</td><td>{{ m.count }}</td><td>{{ m.money_in }}</td><td>{{ m.money_out }}</td><td>{{ m.closing }}</td></tr>
+          {% endfor %}
+        </table>
+      </div>
+    </section>
+    {% endif %}
+
+    <footer><a href="/">&larr; Home</a></footer>
+  </div>
+</body>
+</html>

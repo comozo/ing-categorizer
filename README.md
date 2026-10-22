@@ -20,6 +20,8 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 
 8. **Known merchants** (`/merchants`, linked from the home page) lists every remembered merchant — the ones filled in without asking. Change a category to rewrite every past answer for that merchant (and retrain), or forget it to be asked again next time. "Check with AI" asks Ollama about each one in the background, without showing it your past answers, and flags where it disagrees: the quick way to find AI picks that were accepted without a close look and have been repeating since.
 
+9. **Check against a statement** (`/reconcile`, linked from the home page and each review) answers "does this file add up?" with no finance app involved: statement opening balance + every transaction dated inside the period must equal the closing balance. Give it the categorizer's CSV, the original OFX, a saved review, or a bank CSV with Credit/Debit columns. When it's off, it lists transactions dated outside the period, repeated transaction IDs, look-alike rows, transactions that are exactly the gap (a duplicate?) or half of it (wrong sign?), whether money in or money out is the side that's wrong (when you enter the statement's totals), and a month-by-month running balance to compare with ING's monthly statements. With both the OFX and the CSV it also confirms, transaction by transaction, that the CSV matches the export. `python -m scripts.reconcile` does the same from the command line.
+
 ## Configuration
 
 | Env var | Default | Purpose |

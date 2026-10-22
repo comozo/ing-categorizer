@@ -1,0 +1,8 @@
+<div class="table-scroll">
+  <table class="rec-table">
+    <thead><tr><th>Date</th><th>Description</th><th>Amount</th><th>ID</th></tr></thead>
+    {% for r in rows %}
+    <tr><td>{{ r.date }}</td><td class="rec-desc">{{ r.description }}</td><td>{{ r.amount }}</td><td>{{ r.fitid }}</td></tr>
+    {% endfor %}
+  </table>
+</div>

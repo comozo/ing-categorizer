@@ -20,14 +20,15 @@ from __future__ import annotations
 
 import logging
 import re
+from datetime import date
 from decimal import Decimal, InvalidOperation
 
-from fastapi import FastAPI, File, Request, UploadFile
+from fastapi import FastAPI, File, Form, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, RedirectResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import classifier_ml, jobs, recheck, sessions, store
+from app import classifier_ml, jobs, recheck, reconcile, sessions, store
 from app.categories import CATEGORIES, CATEGORY_GROUPS
 from app.merchant import merchant_key
 from app.ofx_io import OfxFormatError, Transaction, parse_ofx, write_categorized_csv
@@ -331,6 +332,83 @@ async def start_recheck():
 def recheck_status():
     check = recheck.load() or {}
     return {"running": recheck.running(), "done": check.get("done", 0), "total": check.get("total", 0)}
+
+
+def _reconcile_page(request: Request, form: dict, report=None, comparison=None, error=None, source_label=None):
+    return templates.TemplateResponse(
+        request,
+        "reconcile.html",
+        {
+            "form": form,
+            "reviews": [s for s in sessions.summaries() if not s["categorizing"]],
+            "report": report,
+            "comparison": comparison,
+            "error": error,
+            "source_label": source_label,
+        },
+        status_code=400 if error else 200,
+    )
+
+
+@app.get("/reconcile", response_class=HTMLResponse)
+def reconcile_form(request: Request, session: str | None = None):
+    return _reconcile_page(request, {"session_id": session or ""})
+
+
+@app.post("/reconcile", response_class=HTMLResponse)
+async def reconcile_check(
+    request: Request,
+    start: str = Form(...),
+    end: str = Form(...),
+    opening: str = Form(...),
+    closing: str = Form(...),
+    total_credits: str = Form(""),
+    total_debits: str = Form(""),
+    session_id: str = Form(""),
+    ofx_file: UploadFile | None = File(None),
+    csv_file: UploadFile | None = File(None),
+):
+    form = {
+        "start": start, "end": end, "opening": opening, "closing": closing,
+        "total_credits": total_credits, "total_debits": total_debits, "session_id": session_id,
+    }
+    figures = {name: reconcile.parse_amount(form[name]) for name in ("opening", "closing", "total_credits", "total_debits")}
+    if figures["opening"] is None or figures["closing"] is None:
+        return _reconcile_page(request, form, error="Enter the statement's opening and closing balances as numbers.")
+    try:
+        period = (date.fromisoformat(start), date.fromisoformat(end))
+    except ValueError:
+        return _reconcile_page(request, form, error="Enter the statement period's first and last day.")
+
+    # The reconciliation runs on what was imported (the CSV), else the saved
+    # review, else the original export; any other source given is compared
+    # against it transaction by transaction.
+    ofx_rows = csv_rows = session_rows = None
+    try:
+        if ofx_file is not None and ofx_file.filename:
+            ofx_rows = reconcile.rows_from_ofx(await ofx_file.read())
+        if csv_file is not None and csv_file.filename:
+            csv_rows = reconcile.rows_from_csv(await csv_file.read())
+    except (reconcile.SourceError, OfxFormatError) as exc:
+        return _reconcile_page(request, form, error=str(exc))
+    saved = sessions.load(session_id) if session_id else None
+    if saved is not None:
+        session_rows = reconcile.rows_from_session(saved)
+
+    if csv_rows is not None:
+        rows, label = csv_rows, f"the CSV {csv_file.filename}"
+    elif session_rows is not None:
+        rows, label = session_rows, f"the review of {saved['filename']}"
+    elif ofx_rows is not None:
+        rows, label = ofx_rows, f"the export {ofx_file.filename}"
+    else:
+        return _reconcile_page(request, form, error="Add a file, or pick one of your reviews.")
+
+    report = reconcile.reconcile(rows, period[0], period[1], figures["opening"], figures["closing"], figures["total_credits"], figures["total_debits"])
+    comparison = None
+    if ofx_rows is not None and rows is not ofx_rows:
+        comparison = reconcile.compare(ofx_rows, rows)
+    return _reconcile_page(request, form, report=report, comparison=comparison, source_label=label)
 
 
 @app.get("/healthz", response_class=PlainTextResponse)
