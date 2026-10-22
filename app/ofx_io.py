@@ -11,6 +11,7 @@ format needs to leak into the output shape.
 from __future__ import annotations
 
 import csv
+import hashlib
 import io
 import logging
 import re
@@ -188,14 +189,43 @@ def parse_ofx(raw_bytes: bytes) -> list[Transaction]:
     return transactions
 
 
+def transaction_ids(raws: list[dict[str, str]]) -> list[str]:
+    """A unique, repeatable ID per transaction, for the CSV's Transaction ID
+    column.
+
+    ING's FITID is not unique: an international card purchase, its
+    International Transaction Fee and the fee's refund all carry the same
+    FITID on the same day. A finance app that de-duplicates on FITID + date
+    (Securo does) keeps the first of the three and silently drops the rest,
+    and the account balance drifts. So the ID is the FITID plus a short
+    fingerprint of the date, amount and description: different for those
+    three rows, but the same every time the same transaction is exported,
+    so overlapping exports are still recognised as duplicates. Rows identical
+    in every field get -2, -3... in file order.
+    """
+    seen: dict[str, int] = {}
+    ids = []
+    for raw in raws:
+        fingerprint = hashlib.sha1(
+            f"{raw.get('Date', '')}|{raw.get('Amount', '')}|{raw.get('Description', '')}".encode()
+        ).hexdigest()[:8]
+        base = f"{raw.get('FITID', '') or 'ING'}-{fingerprint}"
+        seen[base] = seen.get(base, 0) + 1
+        ids.append(base if seen[base] == 1 else f"{base}-{seen[base]}")
+    return ids
+
+
 def write_categorized_csv(transactions: list[Transaction], categories: list[str]) -> str:
-    """Re-emit every flattened field plus a trailing Category column."""
-    fieldnames = list(transactions[0].raw.keys()) + ["Category"]
+    """Re-emit every flattened field plus a unique Transaction ID (see
+    transaction_ids()) and a trailing Category column."""
+    fieldnames = list(transactions[0].raw.keys()) + ["Transaction ID", "Category"]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fieldnames)
     writer.writeheader()
-    for txn, category in zip(transactions, categories):
+    ids = transaction_ids([txn.raw for txn in transactions])
+    for txn, transaction_id, category in zip(transactions, ids, categories):
         row = dict(txn.raw)
+        row["Transaction ID"] = transaction_id
         row["Category"] = category
         writer.writerow(row)
     return buffer.getvalue()

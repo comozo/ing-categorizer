@@ -116,7 +116,8 @@
       {% for title, rows, note in [
         ("Could explain the gap", report.suspects, "Exactly the gap (a duplicate?) or half of it (wrong sign?). Check each against the statement."),
         ("Dated outside the statement period", report.outside, "Left out of the total above."),
-        ("Sharing a transaction ID", report.repeated_ids, "Almost certainly duplicates."),
+        ("Duplicates", report.true_duplicates, "Same Transaction ID, date, amount and description."),
+        ("Sharing ING's FITID", report.repeated_ids, "Usually genuine (a purchase, its fee and the fee refund), but a finance app matching on FITID drops all but one."),
         ("Same date, amount and description", report.look_alikes, "Often genuine; confirm on the statement."),
       ] %}
         {% if rows %}

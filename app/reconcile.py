@@ -25,7 +25,7 @@ from datetime import date, datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from app.ofx_io import parse_ofx
+from app.ofx_io import parse_ofx, transaction_ids
 
 CENT = Decimal("0.01")
 
@@ -35,7 +35,8 @@ class Row:
     date: date
     description: str
     amount: Decimal  # signed: negative is money out
-    fitid: str
+    fitid: str  # ING's own ID - not unique, see ofx_io.transaction_ids()
+    uid: str  # unique per transaction; what rows are matched on
 
 
 class SourceError(ValueError):
@@ -64,11 +65,15 @@ def _parse_date(text: str) -> date:
     raise SourceError(f"Couldn't read the date {text!r}. Expected 2025-07-01 or 01/07/2025.")
 
 
-def rows_from_ofx(raw: bytes) -> list[Row]:
+def _rows_from_raws(raws: list[dict[str, str]]) -> list[Row]:
     return [
-        Row(date.fromisoformat(t.date), t.description, Decimal(t.amount), t.raw.get("FITID", ""))
-        for t in parse_ofx(raw)
+        Row(date.fromisoformat(raw["Date"]), raw["Description"], Decimal(raw["Amount"]), raw.get("FITID", ""), uid)
+        for raw, uid in zip(raws, transaction_ids(raws))
     ]
+
+
+def rows_from_ofx(raw: bytes) -> list[Row]:
+    return _rows_from_raws([t.raw for t in parse_ofx(raw)])
 
 
 def rows_from_csv(raw: bytes) -> list[Row]:
@@ -83,13 +88,16 @@ def rows_from_csv(raw: bytes) -> list[Row]:
     desc_col = col("description", "details", "memo")
     amount_col = col("amount")
     credit_col, debit_col = col("credit"), col("debit")
-    id_col = col("fitid", "transaction id", "id")
+    fitid_col = col("fitid", "id")
+    uid_col = col("transaction id")
     if date_col is None or (amount_col is None and credit_col is None and debit_col is None):
         raise SourceError("The CSV needs a Date column and either an Amount column or Credit/Debit columns.")
 
     rows = []
+    raw_amounts = []
     for line, record in enumerate(reader, start=2):
         if amount_col is not None:
+            raw_amounts.append(record.get(amount_col, "").strip())
             amount = parse_amount(record.get(amount_col, ""))
         else:
             # Bank CSVs with split columns: debits may be written positive or
@@ -104,17 +112,20 @@ def rows_from_csv(raw: bytes) -> list[Row]:
                 _parse_date(record.get(date_col, "")),
                 (record.get(desc_col, "") if desc_col else "").strip(),
                 amount,
-                (record.get(id_col, "") if id_col else "").strip(),
+                (record.get(fitid_col, "") if fitid_col else "").strip(),
+                (record.get(uid_col, "") if uid_col else "").strip(),
             )
         )
+    # A CSV without the Transaction ID column (made before it existed) gets
+    # the same IDs the categorizer would give it now, from its own fields.
+    if uid_col is None and amount_col is not None and desc_col is not None:
+        raws = [{"Date": r.date.isoformat(), "Description": r.description, "Amount": a, "FITID": r.fitid} for r, a in zip(rows, raw_amounts)]
+        rows = [Row(r.date, r.description, r.amount, r.fitid, uid) for r, uid in zip(rows, transaction_ids(raws))]
     return rows
 
 
 def rows_from_session(session: dict[str, Any]) -> list[Row]:
-    return [
-        Row(date.fromisoformat(t["date"]), t["description"], Decimal(t["amount"]), t["raw"].get("FITID", ""))
-        for t in session["transactions"]
-    ]
+    return _rows_from_raws([t["raw"] for t in session["transactions"]])
 
 
 def _money(value: Decimal) -> str:
@@ -122,7 +133,7 @@ def _money(value: Decimal) -> str:
 
 
 def _row_dict(row: Row) -> dict[str, str]:
-    return {"date": row.date.isoformat(), "description": row.description, "amount": _money(row.amount), "fitid": row.fitid}
+    return {"date": row.date.isoformat(), "description": row.description, "amount": _money(row.amount), "fitid": row.fitid, "uid": row.uid}
 
 
 def reconcile(
@@ -196,15 +207,26 @@ def reconcile(
                 "Money in and money out both match the statement, so the transactions are right and the opening balance is the problem."
             )
 
+    # ING reuses one FITID for an international purchase, its fee and the
+    # fee's refund, so a shared FITID is normal there - but it's exactly what
+    # makes a finance app that de-duplicates on FITID drop transactions.
     fitid_counts = Counter(r.fitid for r in rows if r.fitid)
     repeated_ids = [r for r in rows if r.fitid and fitid_counts[r.fitid] > 1]
     if repeated_ids:
         findings.append(
-            f"{len(repeated_ids)} rows share a transaction ID with another row. A bank gives every transaction its own ID, "
-            "so these are almost certainly duplicates."
+            f"{len(repeated_ids)} rows share ING's FITID with another row. ING does this for an international purchase, "
+            "its fee and the fee refund, so they're usually all genuine. But a finance app that skips duplicates by "
+            "FITID keeps only one of each group: import with the Transaction ID column mapped instead."
+        )
+    uid_counts = Counter(r.uid for r in rows if r.uid)
+    true_duplicates = [r for r in rows if r.uid and uid_counts[r.uid] > 1]
+    if true_duplicates:
+        findings.append(
+            f"{len(true_duplicates)} rows share a Transaction ID: same ID, date, amount and description. "
+            "These are duplicates."
         )
     look_alike_counts = Counter((r.date, r.amount, r.description) for r in rows)
-    look_alikes = [r for r in rows if look_alike_counts[(r.date, r.amount, r.description)] > 1 and not (r.fitid and fitid_counts[r.fitid] > 1)]
+    look_alikes = [r for r in rows if look_alike_counts[(r.date, r.amount, r.description)] > 1 and not (r.uid and uid_counts[r.uid] > 1)]
     if look_alikes:
         findings.append(
             f"{len(look_alikes)} rows have the same date, amount and description as another row but different IDs. "
@@ -248,20 +270,22 @@ def reconcile(
         "outside": [_row_dict(r) for r in sorted(outside, key=lambda r: r.date)],
         "suspects": [_row_dict(r) for r in inside if difference and (r.amount == difference or r.amount * 2 == difference)],
         "repeated_ids": [_row_dict(r) for r in sorted(repeated_ids, key=lambda r: (r.fitid, r.date))],
+        "true_duplicates": [_row_dict(r) for r in sorted(true_duplicates, key=lambda r: (r.uid, r.date))],
         "look_alikes": [_row_dict(r) for r in sorted(look_alikes, key=lambda r: (r.date, r.amount))],
     }
 
 
 def compare(ofx_rows: list[Row], csv_rows: list[Row]) -> dict[str, Any]:
-    """The CSV against the OFX it was made from, matched on transaction ID."""
-    ofx_by_id = {r.fitid: r for r in ofx_rows if r.fitid}
-    csv_by_id = {r.fitid: r for r in csv_rows if r.fitid}
-    missing = [r for fitid, r in ofx_by_id.items() if fitid not in csv_by_id]
-    extra = [r for fitid, r in csv_by_id.items() if fitid not in ofx_by_id]
+    """The CSV against the OFX it was made from, matched on the unique
+    Transaction ID (ING's FITID repeats, so it can't be the key)."""
+    ofx_by_id = {r.uid: r for r in ofx_rows if r.uid}
+    csv_by_id = {r.uid: r for r in csv_rows if r.uid}
+    missing = [r for uid, r in ofx_by_id.items() if uid not in csv_by_id]
+    extra = [r for uid, r in csv_by_id.items() if uid not in ofx_by_id]
     changed = [
-        {"fitid": fitid, "ofx": _row_dict(r), "csv": _row_dict(csv_by_id[fitid])}
-        for fitid, r in ofx_by_id.items()
-        if fitid in csv_by_id and (csv_by_id[fitid].amount != r.amount or csv_by_id[fitid].date != r.date)
+        {"fitid": uid, "ofx": _row_dict(r), "csv": _row_dict(csv_by_id[uid])}
+        for uid, r in ofx_by_id.items()
+        if uid in csv_by_id and (csv_by_id[uid].amount != r.amount or csv_by_id[uid].date != r.date)
     ]
     return {
         "ofx_count": len(ofx_rows),

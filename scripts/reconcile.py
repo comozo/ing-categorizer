@@ -38,7 +38,7 @@ def main() -> None:
     print(f"  opening {r['opening']} + in {r['money_in']} - out {r['money_out']} = {r['computed']} (statement {r['closing']})")
     for finding in r["findings"]:
         print(f"  - {finding}")
-    for title, key in (("gap-sized", "suspects"), ("outside the period", "outside"), ("repeated IDs", "repeated_ids"), ("look-alikes", "look_alikes")):
+    for title, key in (("gap-sized", "suspects"), ("outside the period", "outside"), ("duplicates", "true_duplicates"), ("shared FITID", "repeated_ids"), ("look-alikes", "look_alikes")):
         for row in r[key]:
             print(f"  [{title}] {row['date']} {row['amount']:>12} {row['fitid']:>10}  {row['description'][:60]}")
     print("\nmonth        n          in         out     closing")
