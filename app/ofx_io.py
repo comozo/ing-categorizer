@@ -217,13 +217,28 @@ def transaction_ids(raws: list[dict[str, str]]) -> list[str]:
 
 def write_categorized_csv(transactions: list[Transaction], categories: list[str]) -> str:
     """Re-emit every flattened field plus a unique Transaction ID (see
-    transaction_ids()) and a trailing Category column."""
+    transaction_ids()) and a trailing Category column, oldest transaction first.
+
+    Oldest first because that's the order an importer should create them in:
+    ING exports newest first, and Firefly III recalculates the running balance
+    of every later transaction in the account after each one it creates, so a
+    newest-first file re-saves the whole account per row and slows to tens of
+    seconds per transaction. Oldest first, each new row is the latest one and
+    only itself is recalculated. Within a day, ING's order is reversed too.
+
+    IDs are assigned in the file's original order before sorting, so they match
+    CSVs written before this change and imports still skip what's already in.
+    """
     fieldnames = list(transactions[0].raw.keys()) + ["Transaction ID", "Category"]
     buffer = io.StringIO()
     writer = csv.DictWriter(buffer, fieldnames=fieldnames)
     writer.writeheader()
     ids = transaction_ids([txn.raw for txn in transactions])
-    for txn, transaction_id, category in zip(transactions, ids, categories):
+    rows = sorted(
+        zip(transactions, ids, categories),
+        key=lambda item: (item[0].raw.get("Date", ""), -item[0].row_id),
+    )
+    for txn, transaction_id, category in rows:
         row = dict(txn.raw)
         row["Transaction ID"] = transaction_id
         row["Category"] = category
