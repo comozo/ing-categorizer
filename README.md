@@ -22,6 +22,8 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 
 9. **Check against a statement** (`/reconcile`, linked from the home page and each review) answers "does this file add up?" with no finance app involved: statement opening balance + every transaction dated inside the period must equal the closing balance. Give it the categorizer's CSV, the original OFX, a saved review, or a bank CSV with Credit/Debit columns. When it's off, it lists transactions dated outside the period, repeated transaction IDs, look-alike rows, transactions that are exactly the gap (a duplicate?) or half of it (wrong sign?), whether money in or money out is the side that's wrong (when you enter the statement's totals), and a month-by-month running balance to compare with ING's monthly statements. With both the OFX and the CSV it also confirms, transaction by transaction, that the CSV matches the export. `python -m scripts.reconcile` does the same from the command line.
 
+10. **Send to Firefly III** (on a finished review, next to Download), when the Firefly variables below are set. Pick the Firefly III asset account and the CSV goes straight to the Data Importer's `/autoupload` endpoint, with a generated import configuration: Date, Description, Amount, Category and Transaction ID mapped, duplicate detection on Transaction ID, no import tag. The importer's reply doesn't say what it imported, so the categorizer then checks Firefly III itself that every Transaction ID of the statement is on the account, and lists any that aren't, with the account balance to compare against the statement. Sending again skips what's already there. See `app/firefly.py`.
+
 ## Configuration
 
 | Env var | Default | Purpose |
@@ -33,6 +35,11 @@ Built for evaluating self-hosted personal finance apps (Securo, Actual Budget, F
 | `CONFIDENCE_THRESHOLD` | `0.65` | Below this predicted probability, treat the classifier as unsure and fall back to Ollama |
 | `OLLAMA_CONCURRENCY` | `4` | Maximum Ollama requests in flight at once; more just queue inside Ollama until they time out |
 | `FEW_SHOT_EXAMPLES` | `30` | How many of your past answers (most similar merchants first) go into each Ollama prompt |
+| `FIREFLY_URL` | — | Firefly III's base URL for API calls (enables Send to Firefly III with the three below) |
+| `FIREFLY_PUBLIC_URL` | `FIREFLY_URL` | Firefly III's URL as the browser sees it, for the "open the account" link |
+| `FIREFLY_TOKEN` | — | A Firefly III personal access token; also sent to the importer as a Bearer header |
+| `IMPORTER_URL` | — | The Data Importer's base URL |
+| `IMPORTER_SECRET` | — | The importer's `AUTO_IMPORT_SECRET` (16+ characters; the importer also needs `CAN_POST_FILES=true`) |
 | `SESSION_RETENTION_DAYS` | `30` | Review sessions untouched for longer than this are deleted |
 
 ## Local development

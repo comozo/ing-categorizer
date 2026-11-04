@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>ing-categorizer &middot; sending to Firefly III</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <noscript>{% if push.state in ("uploading", "verifying") %}<meta http-equiv="refresh" content="5">{% endif %}</noscript>
+</head>
+<body>
+  <div class="shell">
+    <h1>Sending {{ session.filename }} to Firefly III</h1>
+    <p class="lede">
+      {{ push.expected }} transactions to <strong>{{ push.account_name or ("account #" ~ push.account_id) }}</strong>.
+      Transactions already in Firefly III are skipped by their Transaction ID, so sending again is safe.
+    </p>
+
+    <section class="card job" id="push" data-session="{{ session.id }}" data-state="{{ push.state }}">
+      <ol class="push-steps">
+        <li><span class="push-mark" id="m-upload"></span><span>The Data Importer creates the transactions</span></li>
+        <li><span class="push-mark" id="m-verify"></span><span>Check that every transaction is in Firefly III</span></li>
+      </ol>
+      <div class="job-error" id="error" role="alert" hidden></div>
+      <div id="result" hidden>
+        <p class="job-count" id="result-line"></p>
+        <p class="firefly-note" id="balance-line"></p>
+        <p class="firefly-note"><a id="account-link" href="{{ push.account_url }}" target="_blank" rel="noopener">Open the account in Firefly III</a></p>
+        <div id="missing-block" hidden>
+          <h2 class="firefly-label">Not found in Firefly III</h2>
+          <div class="table-scroll"><table class="rec-table"><thead><tr><th>Date</th><th>Description</th><th>Amount</th></tr></thead><tbody id="missing-rows"></tbody></table></div>
+          <p class="firefly-note" id="missing-more" hidden></p>
+          <p class="firefly-note">The importer's log names the reason for each. Sending again retries only these.</p>
+        </div>
+      </div>
+      <p class="firefly-note" id="elapsed"></p>
+    </section>
+
+    <footer><a href="/review/{{ session.id }}">&larr; Back to the review</a> &middot; <a href="/">All reviews</a></footer>
+  </div>
+
+  <script>
+  (function () {
+    "use strict";
+    const $ = (x) => document.getElementById(x);
+    const id = $("push").dataset.session;
+    const esc = (s) => String(s).replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" })[c]);
+    const mark = (el, kind) => {
+      el.className = "push-mark push-" + kind;
+      el.textContent = { done: "✓", now: "●", wait: "○", fail: "✗" }[kind];
+    };
+    function since(iso) {
+      const s = Math.max(0, Math.round((Date.now() - Date.parse(iso)) / 1000));
+      return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+    }
+    function render(p) {
+      const st = p.state;
+      mark($("m-upload"), st === "uploading" ? "now" : st === "failed" && p.importer_message == null ? "fail" : "done");
+      mark($("m-verify"), st === "verifying" ? "now" : st === "done" ? (p.missing_count ? "fail" : "done") : st === "failed" && p.importer_message != null ? "fail" : "wait");
+      $("error").hidden = !p.error;
+      $("error").textContent = p.error || "";
+      $("elapsed").textContent = `Running for ${since(p.started_at)}`;
+      if (p.finished_at) {
+        const s = Math.round((Date.parse(p.finished_at) - Date.parse(p.started_at)) / 1000);
+        $("elapsed").textContent = `Took ${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+      }
+      if (st === "done") {
+        $("result").hidden = false;
+        $("result-line").textContent = p.missing_count
+          ? `${p.present} of ${p.expected} transactions are in Firefly III; ${p.missing_count} ${p.missing_count === 1 ? "is" : "are"} missing.`
+          : `All ${p.expected} transactions are in Firefly III.`;
+        $("balance-line").textContent = p.balance != null ? `Account balance now: ${p.balance} ${p.currency}. Compare it with the statement's closing balance.` : "";
+        $("missing-block").hidden = !p.missing_count;
+        $("missing-rows").innerHTML = (p.missing || []).map((r) => `<tr><td>${esc(r.date)}</td><td class="rec-desc">${esc(r.description)}</td><td>${esc(r.amount)}</td></tr>`).join("");
+        $("missing-more").hidden = !(p.missing_count > (p.missing || []).length);
+        $("missing-more").textContent = `… and ${p.missing_count - (p.missing || []).length} more.`;
+      }
+    }
+    function poll() {
+      fetch(`/review/${id}/firefly/status`)
+        .then((r) => r.json())
+        .then((p) => {
+          render(p);
+          if (p.state === "uploading" || p.state === "verifying") setTimeout(poll, 2000);
+        })
+        .catch(() => setTimeout(poll, 4000));
+    }
+    render({{ push | tojson }});
+    poll();
+  })();
+  </script>
+</body>
+</html>

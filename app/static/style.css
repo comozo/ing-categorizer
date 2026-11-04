@@ -126,6 +126,32 @@ button:active, input[type="submit"]:active { transform: scale(0.98); }
 }
 .known-link:hover { border-color: var(--accent); }
 
+/* ---------- send to Firefly III ---------- */
+
+.firefly-send { width: 100%; display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; text-align: left; }
+.firefly-label { font-size: 12px; font-weight: 700; text-transform: uppercase; letter-spacing: 0.06em; color: var(--ink-muted); }
+.firefly-select {
+  font: inherit;
+  font-weight: 600;
+  color: var(--ink);
+  background: var(--surface-raised);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px;
+  width: 100%;
+}
+.firefly-btn { background: linear-gradient(135deg, #16a34a, var(--green)); box-shadow: 0 6px 18px rgba(34, 197, 94, 0.3); }
+.firefly-note { margin: 0; font-size: 13px; color: var(--ink-muted); }
+.firefly-note a { color: #b8adff; }
+.firefly-bad { color: #ffb494; }
+.push-steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 8px; font-size: 14px; }
+.push-steps li { display: flex; gap: 10px; align-items: baseline; }
+.push-mark { width: 20px; flex: 0 0 auto; text-align: center; }
+.push-done { color: var(--green); }
+.push-now { color: var(--gold); }
+.push-wait { color: var(--ink-muted); }
+.push-fail { color: #ffb494; }
+
 /* ---------- categorizing progress ---------- */
 
 .job { display: flex; flex-direction: column; gap: 14px; }

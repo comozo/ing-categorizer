@@ -28,10 +28,10 @@ from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse, Red
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from app import classifier_ml, jobs, recheck, reconcile, sessions, store
+from app import classifier_ml, firefly, firefly_push, jobs, recheck, reconcile, sessions, store
 from app.categories import CATEGORIES, CATEGORY_GROUPS
 from app.merchant import merchant_key
-from app.ofx_io import OfxFormatError, Transaction, parse_ofx, write_categorized_csv
+from app.ofx_io import OfxFormatError, Transaction, parse_ofx, transaction_ids, write_categorized_csv
 
 # Plain stdout logging with timestamps - this is a container, `kubectl logs` is the
 # only place these are ever read from, no need for anything fancier than that.
@@ -155,10 +155,20 @@ async def review(request: Request, session_id: str):
     deck = [(i, m) for i, m in indexed if m["source"] != "memory"]
     remembered = [(i, m) for i, m in indexed if m["source"] == "memory"]
 
+    firefly_accounts, firefly_error = [], None
+    if firefly.enabled():
+        try:
+            firefly_accounts = await firefly.asset_accounts()
+        except firefly.FireflyError as exc:
+            firefly_error = str(exc)
+
     return templates.TemplateResponse(
         request,
         "review.html",
         {
+            "firefly_enabled": firefly.enabled(),
+            "firefly_accounts": firefly_accounts,
+            "firefly_error": firefly_error,
             "session": session,
             "deck": deck,
             "remembered": remembered,
@@ -202,12 +212,10 @@ async def save_answers(session_id: str, request: Request):
     return {"ok": True}
 
 
-@app.post("/review/{session_id}/download")
-async def download(session_id: str, request: Request):
-    form = await request.form()
-    current = sessions.load(session_id)
-    if current is not None and current.get("status") == "categorizing":
-        return RedirectResponse(f"/review/{session_id}", status_code=303)
+def _finalize(session_id: str, form) -> dict | None:
+    """Applies the submitted answers, marks the review complete and feeds
+    confirmed labels back into training. Shared by download and send-to-
+    Firefly, which both mean "this review is done"."""
 
     def finish(session):
         # The form carries every merchant's <select>: with JS these already
@@ -223,15 +231,7 @@ async def download(session_id: str, request: Request):
 
     session = sessions.update(session_id, finish)
     if session is None:
-        return PlainTextResponse("That review no longer exists.", status_code=404)
-
-    by_key = {m["key"]: m for m in session["merchants"]}
-    transactions = [
-        Transaction(row_id=t["row_id"], date=t["date"], description=t["description"], amount=t["amount"], raw=t["raw"])
-        for t in session["transactions"]
-    ]
-    categories = [by_key[t["merchant"]]["category"] for t in session["transactions"]]
-    csv_text = write_categorized_csv(transactions, categories)
+        return None
 
     # Feed confirmed labels back into training - only the merchants whose
     # answer changed since the last download of this session, so downloading
@@ -254,13 +254,81 @@ async def download(session_id: str, request: Request):
         store.relabel({merchant_key(d): c for d, c in new_pairs})
         _retrain()
         sessions.update(session_id, lambda s: s["trained"].update(changed))
+    return session
 
+
+def _session_csv(session: dict) -> str:
+    by_key = {m["key"]: m for m in session["merchants"]}
+    transactions = [
+        Transaction(row_id=t["row_id"], date=t["date"], description=t["description"], amount=t["amount"], raw=t["raw"])
+        for t in session["transactions"]
+    ]
+    categories = [by_key[t["merchant"]]["category"] for t in session["transactions"]]
+    return write_categorized_csv(transactions, categories)
+
+
+def _csv_filename(session: dict) -> str:
     stem = re.sub(r"[^\w.-]", "_", session["filename"].rsplit(".", 1)[0])
+    return f"{stem}-categorized.csv"
+
+
+@app.post("/review/{session_id}/download")
+async def download(session_id: str, request: Request):
+    form = await request.form()
+    current = sessions.load(session_id)
+    if current is not None and current.get("status") == "categorizing":
+        return RedirectResponse(f"/review/{session_id}", status_code=303)
+
+    session = _finalize(session_id, form)
+    if session is None:
+        return PlainTextResponse("That review no longer exists.", status_code=404)
     return PlainTextResponse(
-        csv_text,
+        _session_csv(session),
         media_type="text/csv",
-        headers={"Content-Disposition": f'attachment; filename="{stem}-categorized.csv"'},
+        headers={"Content-Disposition": f'attachment; filename="{_csv_filename(session)}"'},
     )
+
+
+@app.post("/review/{session_id}/firefly")
+async def send_to_firefly(session_id: str, request: Request):
+    form = await request.form()
+    current = sessions.load(session_id)
+    if current is None:
+        return _index(request, error="That review no longer exists. Upload the export again.", status_code=404)
+    if not firefly.enabled() or current.get("status") == "categorizing":
+        return RedirectResponse(f"/review/{session_id}", status_code=303)
+    account_id = str(form.get("firefly_account", ""))
+    if not account_id.isdigit():
+        return RedirectResponse(f"/review/{session_id}", status_code=303)
+    if firefly_push.running(session_id):
+        return RedirectResponse(f"/review/{session_id}/firefly", status_code=303)
+
+    session = _finalize(session_id, form)
+    csv_text = _session_csv(session)
+    raws = [t["raw"] for t in session["transactions"]]
+    expected = [
+        {"uid": uid, "date": raw.get("Date", ""), "description": raw.get("Description", ""), "amount": raw.get("Amount", "")}
+        for raw, uid in zip(raws, transaction_ids(raws))
+    ]
+    account_name = str(form.get(f"firefly_account_name_{account_id}", ""))
+    firefly_push.start(session_id, account_id, account_name, csv_text, expected, _csv_filename(session))
+    return RedirectResponse(f"/review/{session_id}/firefly", status_code=303)
+
+
+@app.get("/review/{session_id}/firefly", response_class=HTMLResponse)
+def firefly_status_page(request: Request, session_id: str):
+    session = sessions.load(session_id)
+    if session is None or "firefly" not in session:
+        return RedirectResponse(f"/review/{session_id}", status_code=303)
+    return templates.TemplateResponse(request, "firefly.html", {"session": session, "push": session["firefly"]})
+
+
+@app.get("/review/{session_id}/firefly/status")
+def firefly_status(session_id: str):
+    session = sessions.load(session_id)
+    if session is None or "firefly" not in session:
+        return JSONResponse({"error": "nothing sent"}, status_code=404)
+    return session["firefly"]
 
 
 @app.post("/review/{session_id}/discard")

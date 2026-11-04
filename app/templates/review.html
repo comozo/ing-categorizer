@@ -105,6 +105,33 @@
           </details>
           {% endif %}
 
+          {% if firefly_enabled %}
+          <div class="firefly-send">
+            {% if firefly_error %}
+              <p class="firefly-note firefly-bad">Firefly III isn't reachable right now: {{ firefly_error }}</p>
+            {% elif firefly_accounts %}
+              {% set last = session.firefly.account_id if session.firefly else none %}
+              <label class="firefly-label" for="firefly_account">Firefly III account</label>
+              <select id="firefly_account" name="firefly_account" class="firefly-select">
+                {% for a in firefly_accounts %}
+                <option value="{{ a.id }}" {% if a.id == last %}selected{% endif %}>{{ a.name }}{% if a.balance is not none %} &middot; {{ a.balance }} {{ a.currency }}{% endif %}</option>
+                {% endfor %}
+              </select>
+              {% for a in firefly_accounts %}<input type="hidden" name="firefly_account_name_{{ a.id }}" value="{{ a.name }}">{% endfor %}
+              <button type="submit" class="firefly-btn" formaction="/review/{{ session.id }}/firefly">Send to Firefly III</button>
+              {% if session.firefly %}
+                <p class="firefly-note">
+                  <a href="/review/{{ session.id }}/firefly">Last sent {{ session.firefly.started_at[:16] | replace("T", " ") }} UTC to {{ session.firefly.account_name }}</a>:
+                  {% if session.firefly.state == "done" %}{{ session.firefly.present }} of {{ session.firefly.expected }} found in Firefly{% elif session.firefly.state == "failed" %}failed{% else %}in progress{% endif %}.
+                  Sending again skips what's already there.
+                </p>
+              {% endif %}
+            {% else %}
+              <p class="firefly-note">No asset accounts in Firefly III yet. Create one with the statement's opening balance, then reload.</p>
+            {% endif %}
+          </div>
+          {% endif %}
+
           <button type="submit" class="download-btn">Download categorized CSV</button>
         </div>
       </div>
