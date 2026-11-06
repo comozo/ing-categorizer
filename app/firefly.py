@@ -137,6 +137,10 @@ def import_config(csv_text: str, account_id: str, filename: str) -> dict[str, An
         "unique_column_index": header.index("Transaction ID"),
         "unique_column_type": "external-id",
         "ignore_duplicate_lines": False,
+        # Required by the importer's v3 schema (resources/schemas/v3.json): a config without
+        # it is rejected before anything is imported, with only "could not decode the JSON"
+        # in the reply. false: duplicates are caught by the Transaction ID column instead.
+        "ignore_duplicate_transactions": False,
         "conversion": False,
     }
 
@@ -150,9 +154,12 @@ async def upload(csv_text: str, config: dict[str, Any], filename: str) -> str:
     }
     try:
         async with httpx.AsyncClient() as client:
+            # The secret goes in the form body, never the URL: the importer reads it from
+            # either ($request->input), but its web server logs every URL, and those logs
+            # are shipped to Loki.
             resp = await client.post(
                 f"{IMPORTER_URL}/autoupload",
-                params={"secret": IMPORTER_SECRET},
+                data={"secret": IMPORTER_SECRET},
                 headers={"Authorization": f"Bearer {FIREFLY_TOKEN}", "Accept": "application/json"},
                 files=files,
                 timeout=_IMPORT_TIMEOUT,
